@@ -1,0 +1,21 @@
+{
+  "blockedProcessNames": [
+    "steam",
+    "minecraft",
+    "fortnite",
+    "roblox",
+    "discord"
+  ],
+  "blockedPageTitles": [
+    "YouTube",
+    "TikTok",
+    "Netflix",
+    "Instagram",
+    "Reddit",
+    "Twitch",
+    "X.com",
+    "Facebook",
+    "Pinterest",
+    "Snapchat"
+  ]
+}

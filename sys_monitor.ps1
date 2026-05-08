@@ -6,7 +6,7 @@ $code = @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public class Win32 {
+public class WindowAPI {
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")]
@@ -15,11 +15,38 @@ public class Win32 {
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 }
 "@
-Add-Type -TypeDefinition $code
+
+# Check if WindowAPI type already exists
+if (-not ([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetType("WindowAPI", $false, $false) } | Where-Object { $_ })) {
+    Add-Type -TypeDefinition $code
+}
 
 $webhookUrl = "https://discord.com/api/webhooks/1500559708673544323/P7RBYmQ7RBaOiVGf7LV390gpr5F3OIqjjHPcOLOEp1APjfrd0NurhYq9DDpLqIaQqK2B"
 
 $googleWebhookUrl = "https://script.google.com/macros/s/AKfycbynf7m-zQPvDTrLPp6SlqLE86BY43iClfRq0CjGvvg-OoYMPOn_ty1PCDfnUMJDFzlONQ/exec"
+
+# GitHub gist URL containing the block lists (JSON format)
+$BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651daea86c95f363992/raw/c29742d6635d79eff8168b35ce86a06fbbfa19a5/gistfile1.txt"
+
+# Default block lists (used if gist cannot be fetched)
+$blockedProcessNames = @("steam", "minecraft", "fortnite")
+$blockedPageTitles = @("YouTube", "Fortnite", "Roblox")
+
+# Function to fetch block lists from gist
+function Get-BlockListsFromGist {
+    param([string]$GistUrl)
+    
+    if (-not $GistUrl) { return $null }
+    
+    try {
+        $response = Invoke-RestMethod -Uri $GistUrl -Method Get -ErrorAction Stop
+        if ($response -is [string]) { $response = $response | ConvertFrom-Json }
+        return $response
+    } catch {
+        Write-Host "Failed to fetch block lists from gist: $($_.Exception.Message)"
+        return $null
+    }
+}
 
 # Get current user
 $currentUser = $env:USERNAME
@@ -35,26 +62,25 @@ $loops = 0
 
 # Bucla infinita
 while ($true) {
-    # 1. Aflam fereastra activa
-    $hwnd = [Win32]::GetForegroundWindow()
+    # Get foreground window
+    $hwnd = [WindowAPI]::GetForegroundWindow()
     if ($hwnd -ne [IntPtr]::Zero) {
         $processId = 0
-        [Win32]::GetWindowThreadProcessId($hwnd, [ref]$processId) | Out-Null
+        [WindowAPI]::GetWindowThreadProcessId($hwnd, [ref]$processId) | Out-Null
         if ($processId -gt 0) {
             $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
             if ($process) {
                 $name = $process.ProcessName
                 
-                # Get window title for browsers and other apps
+                # Get window title
                 $windowTitle = ""
                 $sb = New-Object System.Text.StringBuilder(256)
-                [Win32]::GetWindowText($hwnd, $sb, 256) | Out-Null
+                [WindowAPI]::GetWindowText($hwnd, $sb, 256) | Out-Null
                 $windowTitle = $sb.ToString()
                 
-                # Create a display key combining process name and window title for browsers
+                # Create display key for reporting
                 $displayKey = $name
                 if ($name -eq "chrome" -and $windowTitle) {
-                    # Extract just the page name (usually before the first " - " or at the end)
                     $pageName = $windowTitle -replace " - Google Chrome.*$", ""
                     $displayKey = "$name - $pageName"
                 } elseif ($name -eq "firefox" -and $windowTitle) {
@@ -67,22 +93,53 @@ while ($true) {
                 
                 Write-Host "Detected foreground: $displayKey"
                 
-                # Ignoram procesele de sistem irelevante (ecran de blocare, etc.)
-                if ($name -notin @("Idle", "LockApp", "SearchUI")) {
+                # Check if should be blocked
+                $isBlocked = $false
+                
+                # Check page title against block list
+                foreach ($keyword in $blockedPageTitles) {
+                    if ($windowTitle.IndexOf($keyword, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        Write-Host "BLOCKED: '$windowTitle' contains '$keyword' - killing process"
+                        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+                        $isBlocked = $true
+                        break
+                    }
+                }
+                
+                # Check process name against block list
+                if (-not $isBlocked -and $blockedProcessNames -contains $name) {
+                    Write-Host "BLOCKED: Process '$name' is forbidden - killing process"
+                    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+                    $isBlocked = $true
+                }
+                
+                # Track time for reporting (if not blocked or system process)
+                if (-not $isBlocked -and $name -notin @("Idle", "LockApp", "SearchUI")) {
                     if (-not $appStats.ContainsKey($displayKey)) { $appStats[$displayKey] = 0 }
-                    # Adaugam timpul scanat la aplicatia respectiva
                     $appStats[$displayKey] += $scanIntervalSeconds
                 }
             }
         }
     }
 
-    # 2. Asteptam 10 secunde
     Start-Sleep -Seconds $scanIntervalSeconds
     $loops++
 
-    # 3. Dupa intervalul setat trimitem datele
+    # Every report interval: fetch fresh block lists and send report
     if ($loops -ge $loopsNeeded) {
+        # Refresh block lists from gist
+        $gistData = Get-BlockListsFromGist -GistUrl $BlockListGistUrl
+        if ($gistData) {
+            if ($gistData.blockedProcessNames) {
+                $blockedProcessNames = $gistData.blockedProcessNames
+            }
+            if ($gistData.blockedPageTitles) {
+                $blockedPageTitles = $gistData.blockedPageTitles
+            }
+            Write-Host "Updated block lists from gist"
+        }
+        
+        # Send report
         if ($appStats.Count -gt 0) {
             $message = "**Raport Activitate**`n"
             $message += "**Utilizator:** $currentUser`n"
@@ -96,9 +153,8 @@ while ($true) {
             $data = @()
             
             foreach ($stat in $sortedStats) {
-                # Timpul in secunde
                 $seconds = $stat.Value
-                if ($seconds -ge 6) { # Afisam doar aplicatiile folosite mai mult de 6 secunde
+                if ($seconds -ge 6) {
                     $message += "- **$($stat.Name)**: $seconds secunde`n"
                     $data += @{appName = $stat.Name; seconds = $seconds; user = $currentUser}
                 }
@@ -111,15 +167,13 @@ while ($true) {
                 Write-Host "Data sent to Google Sheets: $($data.Count) entries"
             }
 
-            # Manually create JSON payload for Discord to avoid escaping issues
+            # Send to Discord
             $escapedMessage = $message -replace '\\', '\\\\' -replace '"', '\"' -replace "`n", '\n' -replace "`r", '\r' -replace "`t", '\t'
             $payload = '{"content": "' + $escapedMessage + '"}'
-
-            # Trimitem catre webhook
             Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $payload -ContentType 'application/json' -ErrorAction SilentlyContinue
         }
 
-        # Resetam datele pentru urmatoarea ora
+        # Reset for next period
         $appStats.Clear()
         $loops = 0
     }
