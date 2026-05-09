@@ -40,8 +40,8 @@ $googleWebhookUrl = "https://script.google.com/macros/s/AKfycbynf7m-zQPvDTrLPp6S
 $BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651daea86c95f363992/raw/c29742d6635d79eff8168b35ce86a06fbbfa19a5/gistfile1.txt"
 
 # Default block lists (used if gist cannot be fetched)
-$blockedProcessNames = @("steam", "minecraft", "fortnite")
-$blockedPageTitles = @("YouTube", "Fortnite", "Roblox")
+$blockedProcessNames = @("duckduckgo")
+$blockedPageTitles = @("YouTube")
 
 # Function to fetch block lists from gist
 function Get-BlockListsFromGist {
