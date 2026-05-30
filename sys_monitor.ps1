@@ -37,7 +37,7 @@ $webhookUrl = "https://discord.com/api/webhooks/1500559708673544323/P7RBYmQ7RBaO
 $googleWebhookUrl = "https://script.google.com/macros/s/AKfycbynf7m-zQPvDTrLPp6SlqLE86BY43iClfRq0CjGvvg-OoYMPOn_ty1PCDfnUMJDFzlONQ/exec"
 
 # GitHub gist URL containing the block lists (JSON format)
-$BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651daea86c95f363992/raw/c29742d6635d79eff8168b35ce86a06fbbfa19a5/gistfile1.txt"
+$BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651daea86c95f363992/raw/gistfile1.txt"
 
 # Default block lists (used if gist cannot be fetched)
 $blockedProcessNames = @("duckduckgo")
@@ -64,7 +64,7 @@ $currentUser = $env:USERNAME
 
 # Constants
 $scanIntervalSeconds = 5
-$reportIntervalSeconds = 300  # 5 minutes
+$reportIntervalSeconds = 360  # 5 minutes
 $loopsNeeded = [math]::Ceiling($reportIntervalSeconds / $scanIntervalSeconds)
 
 # Dictionar in care tinem timpul pentru fiecare aplicatie
@@ -146,7 +146,11 @@ while ($true) {
             if ($gistData.blockedPageTitles) {
                 $blockedPageTitles = $gistData.blockedPageTitles
             }
-            Write-Host "Updated block lists from gist"
+            # Write-Host "=== Gist update OK ==="
+            # Write-Host "  blockedProcessNames: $($blockedProcessNames -join ', ')"
+            # Write-Host "  blockedPageTitles:   $($blockedPageTitles -join ', ')"
+        } else {
+            # Write-Host "=== Gist update FAILED (null response - check JSON syntax) ==="
         }
         
         # Send report
@@ -167,7 +171,7 @@ while ($true) {
             if ($seconds -ge 6) {
                 $activityFound = $true
                 $message += "- **$($stat.Name)**: $seconds secunde`n"
-                $data += @($stat.Name, $seconds, $currentUser)
+                $data += @([PSCustomObject]@{ appName = $stat.Name; seconds = $seconds; user = $currentUser })
             }
         }
 
@@ -178,8 +182,10 @@ while ($true) {
         # Send data to Google Sheets when activity exists
         if ($data.Count -gt 0) {
             $jsonData = $data | ConvertTo-Json
+            # Write-Host "=== Sending to Google Sheets ==="
+            # Write-Host $jsonData
             Invoke-RestMethod -Uri $googleWebhookUrl -Method Post -Body $jsonData -ContentType 'application/json' -ErrorAction SilentlyContinue
-            Write-Host "Data sent to Google Sheets: $($data.Count) entries"
+            # Write-Host "=== Google Sheets request sent ==="
         }
 
         # Send to Discord always
