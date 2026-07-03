@@ -154,6 +154,7 @@ namespace Monitor
         private const string BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651daea86c95f363992/raw/gistfile1.txt";
         private const string CurrentVersion = "1.0.0";
         private static string updateUrl = "";
+        private static string updateToken = "";
 
         private static List<string> blockedProcessNames = new List<string> 
         { 
@@ -443,6 +444,10 @@ namespace Monitor
                         {
                             updateUrl = downloadUrlElement.GetString();
                         }
+                        if (root.TryGetProperty("updateToken", out var updateTokenElement))
+                        {
+                            updateToken = updateTokenElement.GetString();
+                        }
                         if (root.TryGetProperty("scanIntervalSeconds", out var scanElement) && scanElement.ValueKind == JsonValueKind.Number)
                         {
                             scanIntervalSeconds = scanElement.GetInt32();
@@ -701,7 +706,40 @@ namespace Monitor
                 Console.WriteLine($"Downloading update from {downloadUrl} to {newExe}...");
 
                 // Initial download request
-                using (var response = await httpClient.GetAsync(downloadUrl))
+                HttpResponseMessage response;
+
+                if (!string.IsNullOrEmpty(updateToken) && downloadUrl.Contains("api.github.com"))
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
+                    request.Headers.Add("Authorization", $"Bearer {updateToken}");
+                    request.Headers.Add("Accept", "application/octet-stream");
+                    request.Headers.Add("User-Agent", "MonitorApp");
+
+                    var initialResponse = await redirectHttpClient.SendAsync(request);
+                    if (initialResponse.StatusCode == System.Net.HttpStatusCode.Redirect ||
+                        initialResponse.StatusCode == System.Net.HttpStatusCode.Found)
+                    {
+                        var redirectUrl = initialResponse.Headers.Location;
+                        if (redirectUrl != null)
+                        {
+                            response = await httpClient.GetAsync(redirectUrl);
+                        }
+                        else
+                        {
+                            throw new Exception("GitHub API redirected but no Location header was found.");
+                        }
+                    }
+                    else
+                    {
+                        response = initialResponse;
+                    }
+                }
+                else
+                {
+                    response = await httpClient.GetAsync(downloadUrl);
+                }
+
+                using (response)
                 {
                     response.EnsureSuccessStatusCode();
 

@@ -1,0 +1,32 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger workflow when pushing tags matching v*, e.g., v1.0.1
+
+permissions:
+  contents: write # Needed to create releases and upload assets
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x' # Adjust to match your SDK version
+        
+    - name: Publish Monitor
+      run: dotnet publish Monitor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+      
+    - name: Upload Release Asset
+      uses: softprops/action-gh-release@v2
+      with:
+        files: bin/Release/net10.0-windows/win-x64/publish/Monitor.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
