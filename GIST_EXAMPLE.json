@@ -1,21 +1,37 @@
 {
+  "version": "1.0.0",
+  "downloadUrl": "https://drive.google.com/file/d/1_coxsctkH2AC2pprHFP8Z85nfjauSYdV/view?usp=sharing",
+  "scanIntervalSeconds": 5,
+  "reportIntervalSeconds": 300,
+  "screenshotIntervalSeconds": 300,
   "blockedProcessNames": [
-    "steam",
-    "minecraft",
-    "fortnite",
-    "roblox",
-    "discord"
+    "duckduckgo",
+    "opera",
+    "GettingOverIt",
+    "FPSChess-Win64-Shipping",
+    "cs2",
+    "steamwebhelper",
+    "Discord",
+    "Grapples Galore",
+    "AimLab_tb",
+    "FortniteClient-Win64-Shipping",
+    "chrome",
+    "GeometryDash",
+    "RobloxPlayerBeta"
   ],
   "blockedPageTitles": [
     "YouTube",
-    "TikTok",
-    "Netflix",
-    "Instagram",
-    "Reddit",
+    "Agar.io",
+    "diep.io",
+    "EvoWorld",
+    "mope.io",
+    "Lordz.io",
     "Twitch",
-    "X.com",
-    "Facebook",
-    "Pinterest",
-    "Snapchat"
+    "EVOWORLD",
+    "Game",
+    "CRYZEN",
+    "Poki",
+    "Infinite Craft",
+    "ZOMBS.io"
   ]
 }
