@@ -154,7 +154,6 @@ namespace Monitor
         private const string BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651daea86c95f363992/raw/gistfile1.txt";
         private const string CurrentVersion = "1.0.0";
         private static string updateUrl = "";
-        private static string updateToken = "";
 
         private static List<string> blockedProcessNames = new List<string> 
         { 
@@ -444,10 +443,6 @@ namespace Monitor
                         {
                             updateUrl = downloadUrlElement.GetString();
                         }
-                        if (root.TryGetProperty("updateToken", out var updateTokenElement))
-                        {
-                            updateToken = updateTokenElement.GetString();
-                        }
                         if (root.TryGetProperty("scanIntervalSeconds", out var scanElement) && scanElement.ValueKind == JsonValueKind.Number)
                         {
                             scanIntervalSeconds = scanElement.GetInt32();
@@ -677,105 +672,16 @@ namespace Monitor
                 string backupExe = currentExe + ".bak";
                 string newExe = currentExe + ".new";
 
-                string downloadUrl = updateUrl;
+                Console.WriteLine($"Downloading update from {updateUrl} to {newExe}...");
 
-                // Detect if it is a Google Drive URL and parse File ID
-                string fileId = "";
-                if (updateUrl.Contains("drive.google.com"))
-                {
-                    var driveUrlMatch = Regex.Match(updateUrl, @"/file/d/([a-zA-Z0-9_-]+)");
-                    if (driveUrlMatch.Success)
-                    {
-                        fileId = driveUrlMatch.Groups[1].Value;
-                    }
-                    else
-                    {
-                        var ucMatch = Regex.Match(updateUrl, @"id=([a-zA-Z0-9_-]+)");
-                        if (ucMatch.Success)
-                        {
-                            fileId = ucMatch.Groups[1].Value;
-                        }
-                    }
-                }
-
-                if (!string.IsNullOrEmpty(fileId))
-                {
-                    downloadUrl = $"https://drive.google.com/uc?export=download&id={fileId}";
-                }
-
-                Console.WriteLine($"Downloading update from {downloadUrl} to {newExe}...");
-
-                // Initial download request
-                HttpResponseMessage response;
-
-                if (!string.IsNullOrEmpty(updateToken) && downloadUrl.Contains("api.github.com"))
-                {
-                    var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
-                    request.Headers.Add("Authorization", $"Bearer {updateToken}");
-                    request.Headers.Add("Accept", "application/octet-stream");
-                    request.Headers.Add("User-Agent", "MonitorApp");
-
-                    var initialResponse = await redirectHttpClient.SendAsync(request);
-                    if (initialResponse.StatusCode == System.Net.HttpStatusCode.Redirect ||
-                        initialResponse.StatusCode == System.Net.HttpStatusCode.Found)
-                    {
-                        var redirectUrl = initialResponse.Headers.Location;
-                        if (redirectUrl != null)
-                        {
-                            response = await httpClient.GetAsync(redirectUrl);
-                        }
-                        else
-                        {
-                            throw new Exception("GitHub API redirected but no Location header was found.");
-                        }
-                    }
-                    else
-                    {
-                        response = initialResponse;
-                    }
-                }
-                else
-                {
-                    response = await httpClient.GetAsync(downloadUrl);
-                }
-
-                using (response)
+                // Download the file (automatically follows redirects for public GitHub releases)
+                using (var response = await httpClient.GetAsync(updateUrl))
                 {
                     response.EnsureSuccessStatusCode();
 
-                    // Check if Google Drive returned HTML (virus scan warning page) instead of the binary
-                    string mediaType = response.Content.Headers.ContentType?.MediaType;
-                    if (mediaType != null && mediaType.Contains("text/html"))
+                    using (var fs = new FileStream(newExe, FileMode.Create, FileAccess.Write, FileShare.None))
                     {
-                        string htmlContent = await response.Content.ReadAsStringAsync();
-                        var confirmMatch = Regex.Match(htmlContent, @"confirm=([0-9A-Za-z_-]+)");
-                        
-                        if (confirmMatch.Success)
-                        {
-                            string confirmToken = confirmMatch.Groups[1].Value;
-                            string confirmedUrl = $"https://drive.google.com/uc?export=download&id={fileId}&confirm={confirmToken}";
-                            Console.WriteLine("Bypassing Google Drive virus scan warning...");
-                            
-                            using (var confirmedResponse = await httpClient.GetAsync(confirmedUrl))
-                            {
-                                confirmedResponse.EnsureSuccessStatusCode();
-                                using (var fs = new FileStream(newExe, FileMode.Create, FileAccess.Write, FileShare.None))
-                                {
-                                    await confirmedResponse.Content.CopyToAsync(fs);
-                                }
-                            }
-                        }
-                        else
-                        {
-                            throw new Exception("Received HTML from Google Drive but failed to extract the confirmation token.");
-                        }
-                    }
-                    else
-                    {
-                        using (var fs = new FileStream(newExe, FileMode.Create, FileAccess.Write, FileShare.None))
-                        {
-                            await response.Content.CopyToAsync(fs);
-                        }
+                        await response.Content.CopyToAsync(fs);
                     }
                 }
 
