@@ -36,6 +36,9 @@
  *     * To prevent a console window from opening initially at all, the project file (Monitor.csproj)
  *       can be configured with <OutputType>WinExe</OutputType> instead of <OutputType>Exe</OutputType>.
  *     * Alternatively, it can be launched via a script such as the included run_hidden.vbs.
+
+ dotnet run -- --visible
+ dotnet publish -c Release 
  * ======================================================================================
  */
 
@@ -46,8 +49,10 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
-using Microsoft.Win32;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
+using Microsoft.Win32;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -155,6 +160,12 @@ namespace Monitor
         private const string BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651daea86c95f363992/raw/gistfile1.txt";
         private static string updateUrl = "";
 
+        [DllImport("advapi32.dll", SetLastError = true)]
+        static extern bool GetKernelObjectSecurity(IntPtr Handle, int securityInformation, [Out] byte[] pSecurityDescriptor, uint nLength, out uint lpnLengthNeeded);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        static extern bool SetKernelObjectSecurity(IntPtr Handle, int securityInformation, [In] byte[] pSecurityDescriptor);
+
         private static List<string> blockedProcessNames = new List<string> 
         { 
             "duckduckgo",
@@ -209,6 +220,10 @@ namespace Monitor
                 // Another instance is already running. Exit silently.
                 return;
             }
+
+            // Protect the process from being terminated by the current user (requires Admin to kill)
+            ProtectProcess();
+
             // Clean up backup file if it exists from a previous update
             try
             {
@@ -850,6 +865,39 @@ namespace Monitor
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to save version to registry: {ex.Message}");
+            }
+        }
+
+        private static void ProtectProcess()
+        {
+            try
+            {
+                var hProcess = Process.GetCurrentProcess().Handle;
+                uint len = 0;
+                // Get required size (DACL_SECURITY_INFORMATION = 4)
+                GetKernelObjectSecurity(hProcess, 4, null, 0, out len);
+                
+                if (len > 0)
+                {
+                    byte[] sd = new byte[len];
+                    if (GetKernelObjectSecurity(hProcess, 4, sd, len, out len))
+                    {
+                        var dacl = new RawSecurityDescriptor(sd, 0);
+                        var currentUserSid = WindowsIdentity.GetCurrent().User;
+                        
+                        // Deny PROCESS_TERMINATE (0x0001) to the current user
+                        dacl.DiscretionaryAcl.InsertAce(0, new CommonAce(AceFlags.None, AceQualifier.AccessDenied, 0x0001, currentUserSid, false, null));
+                        
+                        byte[] newSd = new byte[dacl.BinaryLength];
+                        dacl.GetBinaryForm(newSd, 0);
+                        SetKernelObjectSecurity(hProcess, 4, newSd);
+                        Console.WriteLine("Process termination protection applied.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to apply process protection: {ex.Message}");
             }
         }
     }
