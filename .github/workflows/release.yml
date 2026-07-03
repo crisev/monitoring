@@ -2,8 +2,9 @@ name: Build and Release
 
 on:
   push:
-    tags:
-      - 'v*' # Trigger workflow when pushing tags matching v*, e.g., v1.0.1
+    branches:
+      - main
+      - master # Just in case your default branch is named master
 
 permissions:
   contents: write # Needed to create releases and upload assets
@@ -15,18 +16,29 @@ jobs:
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
-      
+      with:
+        fetch-depth: 0 # Required to fetch all history for version bumping
+        
+    - name: Bump version and push tag
+      id: tag_version
+      uses: mathieudutour/github-tag-action@v6.2
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        default_bump: patch # Automatically increments the version (e.g., v1.0.0 -> v1.0.1)
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x' # Adjust to match your SDK version
+        dotnet-version: '10.0.x'
         
     - name: Publish Monitor
       run: dotnet publish Monitor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
       
-    - name: Upload Release Asset
+    - name: Create Release and Upload Asset
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: ${{ steps.tag_version.outputs.new_tag }}
+        name: Release ${{ steps.tag_version.outputs.new_tag }}
         files: bin/Release/net10.0-windows/win-x64/publish/Monitor.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
