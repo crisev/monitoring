@@ -215,6 +215,13 @@ namespace Monitor
 
         private static readonly HttpClient httpClient = new HttpClient();
         private static readonly HttpClient redirectHttpClient = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+
+        static Program()
+        {
+            httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            redirectHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        }
+
         private static readonly string currentUser = Environment.UserName;
 
         private static int scanIntervalSeconds = 5;
@@ -228,6 +235,8 @@ namespace Monitor
         private static Thread overlayThread;
         private static bool wasInInterval = false;
         private static bool isDebugMode = false;
+        private static bool noShutdown = false;
+        private static bool forceUpdate = false;
 
         private static void StartOverlayThread()
         {
@@ -284,14 +293,25 @@ namespace Monitor
 
             isDebugMode = args.Contains("--ignore-intervals", StringComparer.OrdinalIgnoreCase) || 
                           args.Contains("--debug", StringComparer.OrdinalIgnoreCase);
+            noShutdown = args.Contains("--no-shutdown", StringComparer.OrdinalIgnoreCase);
+            forceUpdate = args.Contains("--test-update", StringComparer.OrdinalIgnoreCase) || 
+                          args.Contains("--force-update", StringComparer.OrdinalIgnoreCase);
 
-            // Hide or allocate console window depending on --visible or isDebugMode
-            if (args.Contains("--visible", StringComparer.OrdinalIgnoreCase) || isDebugMode)
+            // Hide or allocate console window depending on --visible, isDebugMode, noShutdown or forceUpdate
+            if (args.Contains("--visible", StringComparer.OrdinalIgnoreCase) || isDebugMode || noShutdown || forceUpdate)
             {
                 AllocConsole();
                 if (isDebugMode)
                 {
                     Console.WriteLine("Debug / Ignore-Intervals mode is active. Bypassing shutdowns and interval exits.");
+                }
+                else if (noShutdown)
+                {
+                    Console.WriteLine("No-Shutdown mode is active. Bypassing actual shutdowns.");
+                }
+                else if (forceUpdate)
+                {
+                    Console.WriteLine("Force-Update / Test-Update mode is active. Triggering update checks immediately.");
                 }
             }
             else
@@ -315,7 +335,7 @@ namespace Monitor
 
             if (activeInterval == null && configuredIntervals.Count > 0)
             {
-                if (!isDebugMode)
+                if (!isDebugMode && !noShutdown)
                 {
                     Console.WriteLine("No active interval. Shutting down in 5 seconds...");
                     try
@@ -327,6 +347,11 @@ namespace Monitor
                     {
                         Console.WriteLine($"Failed to initiate shutdown: {ex.Message}");
                     }
+                    return;
+                }
+                else
+                {
+                    Console.WriteLine("No active interval. Shutdown bypassed due to debug/no-shutdown flags. Exiting app.");
                     return;
                 }
             }
@@ -357,7 +382,7 @@ namespace Monitor
                     if (wasInInterval && !isInInterval)
                     {
                         Console.WriteLine("Interval finished and no other interval is active. Shutting down.");
-                        if (!isDebugMode)
+                        if (!isDebugMode && !noShutdown)
                         {
                             try
                             {
@@ -372,7 +397,7 @@ namespace Monitor
                         }
                         else
                         {
-                            Console.WriteLine("[DEBUG] Shutdown simulated since debug mode is active.");
+                            Console.WriteLine("[DEBUG] Shutdown simulated since debug/no-shutdown mode is active.");
                             Environment.Exit(0);
                         }
                     }
@@ -649,13 +674,16 @@ namespace Monitor
                             configuredIntervals = newIntervals;
                             SaveIntervalsToRegistry();
                         }
-                        if (root.TryGetProperty("version", out var versionElement) && !isDebugMode)
+                        if (root.TryGetProperty("version", out var versionElement))
                         {
                             string remoteVersion = versionElement.GetString();
                             string localVersion = GetLocalVersion();
-                            if (!string.IsNullOrEmpty(remoteVersion) && remoteVersion != localVersion)
+                            bool isVersionMismatch = !string.IsNullOrEmpty(remoteVersion) && remoteVersion != localVersion;
+
+                            if ((isVersionMismatch && !isDebugMode) || forceUpdate)
                             {
-                                Console.WriteLine($"New version detected: {remoteVersion} (Local: {localVersion}). Starting auto-update...");
+                                Console.WriteLine($"[(Update Check)] Remote Version: {remoteVersion} (Local: {localVersion}, ForceUpdate: {forceUpdate})");
+                                Console.WriteLine("Starting auto-update...");
                                 await UpdateApplicationAsync(remoteVersion);
                             }
                         }
@@ -952,6 +980,12 @@ namespace Monitor
                 // Update the local version in the registry so it doesn't loop
                 SetLocalVersion(remoteVersion);
 
+                if (forceUpdate)
+                {
+                    Console.WriteLine("Update applied successfully! [Force-Update Mode] Bypassing process restart to prevent infinite loop. Exiting cleanly.");
+                    Environment.Exit(0);
+                }
+
                 Console.WriteLine("Update applied successfully. Restarting...");
 
                 // Restart the process
@@ -971,6 +1005,16 @@ namespace Monitor
             catch (Exception ex)
             {
                 Console.WriteLine($"Update failed: {ex.Message}");
+                try
+                {
+                    var payload = new 
+                    { 
+                        content = $"**Update Failure on {currentUser}'s PC:**\n- **Error:** `{ex.Message}`\n- **Type:** `{ex.GetType().Name}`\n- **Path:** `{Environment.ProcessPath}`" 
+                    };
+                    string json = JsonSerializer.Serialize(payload);
+                    await httpClient.PostAsync(TextWebhookUrl, new StringContent(json, Encoding.UTF8, "application/json"));
+                }
+                catch { }
             }
         }
 
