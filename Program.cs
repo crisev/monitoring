@@ -149,6 +149,15 @@ namespace Monitor
         [DllImport("user32.dll")]
         static extern int GetSystemMetrics(int nIndex);
 
+        [DllImport("gdi32.dll")]
+        static extern bool BitBlt(IntPtr hdcDest, int nXDest, int nYDest, int nWidth, int nHeight, IntPtr hdcSrc, int nXSrc, int nYSrc, uint dwRop);
+
+        [DllImport("user32.dll")]
+        static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
         private const int SM_CXSCREEN = 0;
         private const int SM_CYSCREEN = 1;
 
@@ -218,6 +227,7 @@ namespace Monitor
         private static OverlayForm overlayForm;
         private static Thread overlayThread;
         private static bool wasInInterval = false;
+        private static bool isDebugMode = false;
 
         private static void StartOverlayThread()
         {
@@ -272,10 +282,17 @@ namespace Monitor
                 Console.WriteLine($"Failed to clean up backup file: {ex.Message}");
             }
 
-            // Hide or allocate console window depending on --visible
-            if (args.Contains("--visible", StringComparer.OrdinalIgnoreCase))
+            isDebugMode = args.Contains("--ignore-intervals", StringComparer.OrdinalIgnoreCase) || 
+                          args.Contains("--debug", StringComparer.OrdinalIgnoreCase);
+
+            // Hide or allocate console window depending on --visible or isDebugMode
+            if (args.Contains("--visible", StringComparer.OrdinalIgnoreCase) || isDebugMode)
             {
                 AllocConsole();
+                if (isDebugMode)
+                {
+                    Console.WriteLine("Debug / Ignore-Intervals mode is active. Bypassing shutdowns and interval exits.");
+                }
             }
             else
             {
@@ -290,30 +307,31 @@ namespace Monitor
 
             LoadIntervalsFromRegistry();
 
+            // Always try to fetch the latest configuration and intervals from the Gist first
+            await RefreshBlockListsAsync();
+
             TimeSpan currentTime = DateTime.Now.TimeOfDay;
             var activeInterval = configuredIntervals.FirstOrDefault(i => i.IsActive(currentTime));
 
             if (activeInterval == null && configuredIntervals.Count > 0)
             {
-                Console.WriteLine("Started outside defined intervals. Forcing update from gist...");
-                await RefreshBlockListsAsync();
-                
-                currentTime = DateTime.Now.TimeOfDay;
-                activeInterval = configuredIntervals.FirstOrDefault(i => i.IsActive(currentTime));
-                
-                if (activeInterval == null)
+                if (!isDebugMode)
                 {
-                    Console.WriteLine("No active interval after update. Shutting down in 5 seconds...");
-                    Process.Start(new ProcessStartInfo("shutdown", "/s /t 5") { CreateNoWindow = true, UseShellExecute = false });
+                    Console.WriteLine("No active interval. Shutting down in 5 seconds...");
+                    try
+                    {
+                        string shutdownExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shutdown.exe");
+                        Process.Start(new ProcessStartInfo(shutdownExe, "/s /f /t 5") { CreateNoWindow = true, UseShellExecute = false });
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to initiate shutdown: {ex.Message}");
+                    }
                     return;
                 }
             }
-            else
-            {
-                await RefreshBlockListsAsync();
-            }
             
-            wasInInterval = activeInterval != null;
+            wasInInterval = activeInterval != null || isDebugMode;
             StartOverlayThread();
 
             while (true)
@@ -322,13 +340,41 @@ namespace Monitor
                 {
                     TimeSpan now = DateTime.Now.TimeOfDay;
                     var currentActiveInterval = configuredIntervals.FirstOrDefault(i => i.IsActive(now));
+                    
+                    if (currentActiveInterval == null && isDebugMode)
+                    {
+                        // Create a dummy interval for debugging
+                        currentActiveInterval = new TimeInterval
+                        {
+                            Start = now.Subtract(TimeSpan.FromHours(1)),
+                            End = now.Add(TimeSpan.FromHours(1)),
+                            Type = "School"
+                        };
+                    }
+
                     bool isInInterval = currentActiveInterval != null;
 
                     if (wasInInterval && !isInInterval)
                     {
                         Console.WriteLine("Interval finished and no other interval is active. Shutting down.");
-                        Process.Start(new ProcessStartInfo("shutdown", "/s /t 5") { CreateNoWindow = true, UseShellExecute = false });
-                        Environment.Exit(0);
+                        if (!isDebugMode)
+                        {
+                            try
+                            {
+                                string shutdownExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shutdown.exe");
+                                Process.Start(new ProcessStartInfo(shutdownExe, "/s /f /t 5") { CreateNoWindow = true, UseShellExecute = false });
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Failed to initiate shutdown: {ex.Message}");
+                            }
+                            Environment.Exit(0);
+                        }
+                        else
+                        {
+                            Console.WriteLine("[DEBUG] Shutdown simulated since debug mode is active.");
+                            Environment.Exit(0);
+                        }
                     }
                     wasInInterval = isInInterval;
 
@@ -602,7 +648,7 @@ namespace Monitor
                             configuredIntervals = newIntervals;
                             SaveIntervalsToRegistry();
                         }
-                        if (root.TryGetProperty("version", out var versionElement))
+                        if (root.TryGetProperty("version", out var versionElement) && !isDebugMode)
                         {
                             string remoteVersion = versionElement.GetString();
                             string localVersion = GetLocalVersion();
@@ -758,9 +804,28 @@ namespace Monitor
                 byte[] imageBytes;
                 using (Bitmap bitmap = new Bitmap(width, height))
                 {
-                    using (Graphics g = Graphics.FromImage(bitmap))
+                    IntPtr hdcSrc = GetDC(IntPtr.Zero);
+                    if (hdcSrc != IntPtr.Zero)
                     {
-                        g.CopyFromScreen(0, 0, 0, 0, new Size(width, height));
+                        try
+                        {
+                            using (Graphics g = Graphics.FromImage(bitmap))
+                            {
+                                IntPtr hdcDest = g.GetHdc();
+                                try
+                                {
+                                    BitBlt(hdcDest, 0, 0, width, height, hdcSrc, 0, 0, 0x00CC0020 | 0x40000000); // SRCCOPY | CAPTUREBLT
+                                }
+                                finally
+                                {
+                                    g.ReleaseHdc(hdcDest);
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            ReleaseDC(IntPtr.Zero, hdcSrc);
+                        }
                     }
 
                     using (MemoryStream ms = new MemoryStream())
