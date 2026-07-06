@@ -4,6 +4,18 @@
   "scanIntervalSeconds": 5,
   "reportIntervalSeconds": 300,
   "screenshotIntervalSeconds": 300,
+  "intervals": [
+    {
+      "start": "08:00",
+      "end": "14:00",
+      "type": "School"
+    },
+    {
+      "start": "14:00",
+      "end": "16:00",
+      "type": "Gaming"
+    }
+  ],
   "blockedProcessNames": [
     "duckduckgo",
     "opera",

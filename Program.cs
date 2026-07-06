@@ -59,6 +59,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Windows.Forms;
 
 namespace Monitor
 {
@@ -213,8 +214,37 @@ namespace Monitor
 
         private static Mutex singleInstanceMutex = new Mutex(true, "{8F6F0AC4-B9A1-45fd-A8CF-72F04E6BDE8F}");
 
+        private static List<TimeInterval> configuredIntervals = new List<TimeInterval>();
+        private static OverlayForm overlayForm;
+        private static Thread overlayThread;
+        private static bool wasInInterval = false;
+
+        private static void StartOverlayThread()
+        {
+            overlayThread = new Thread(() =>
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                overlayForm = new OverlayForm();
+                var handle = overlayForm.Handle; // Force handle creation
+                Application.Run();
+            });
+            overlayThread.SetApartmentState(ApartmentState.STA);
+            overlayThread.IsBackground = true;
+            overlayThread.Start();
+        }
+
         static async Task Main(string[] args)
         {
+            if (args.Contains("--test-overlay", StringComparer.OrdinalIgnoreCase))
+            {
+                StartOverlayThread();
+                while (overlayForm == null || !overlayForm.IsHandleCreated) Thread.Sleep(100);
+                overlayForm.UpdateCountdown(TimeSpan.FromMinutes(9).Add(TimeSpan.FromSeconds(59)));
+                MessageBox.Show("Overlay is currently visible. Click OK to close.", "Test Overlay", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             if (!singleInstanceMutex.WaitOne(TimeSpan.Zero, true))
             {
                 // Another instance is already running. Exit silently.
@@ -258,18 +288,95 @@ namespace Monitor
 
             int loops = 0;
 
-            // Fetch blocklists immediately at startup
-            await RefreshBlockListsAsync();
+            LoadIntervalsFromRegistry();
+
+            TimeSpan currentTime = DateTime.Now.TimeOfDay;
+            var activeInterval = configuredIntervals.FirstOrDefault(i => i.IsActive(currentTime));
+
+            if (activeInterval == null && configuredIntervals.Count > 0)
+            {
+                Console.WriteLine("Started outside defined intervals. Forcing update from gist...");
+                await RefreshBlockListsAsync();
+                
+                currentTime = DateTime.Now.TimeOfDay;
+                activeInterval = configuredIntervals.FirstOrDefault(i => i.IsActive(currentTime));
+                
+                if (activeInterval == null)
+                {
+                    Console.WriteLine("No active interval after update. Shutting down in 5 seconds...");
+                    Process.Start(new ProcessStartInfo("shutdown", "/s /t 5") { CreateNoWindow = true, UseShellExecute = false });
+                    return;
+                }
+            }
+            else
+            {
+                await RefreshBlockListsAsync();
+            }
+            
+            wasInInterval = activeInterval != null;
+            StartOverlayThread();
 
             while (true)
             {
                 try
                 {
+                    TimeSpan now = DateTime.Now.TimeOfDay;
+                    var currentActiveInterval = configuredIntervals.FirstOrDefault(i => i.IsActive(now));
+                    bool isInInterval = currentActiveInterval != null;
+
+                    if (wasInInterval && !isInInterval)
+                    {
+                        Console.WriteLine("Interval finished and no other interval is active. Shutting down.");
+                        Process.Start(new ProcessStartInfo("shutdown", "/s /t 5") { CreateNoWindow = true, UseShellExecute = false });
+                        Environment.Exit(0);
+                    }
+                    wasInInterval = isInInterval;
+
+                    if (isInInterval)
+                    {
+                        TimeSpan end = currentActiveInterval.End;
+                        TimeSpan remaining;
+                        if (end >= now)
+                        {
+                            remaining = end - now;
+                        }
+                        else
+                        {
+                            remaining = TimeSpan.FromHours(24) - now + end;
+                        }
+
+                        if (remaining.TotalMinutes <= 10)
+                        {
+                            if (overlayForm != null && overlayForm.IsHandleCreated)
+                            {
+                                overlayForm.UpdateCountdown(remaining);
+                            }
+                        }
+                        else
+                        {
+                            if (overlayForm != null && overlayForm.IsHandleCreated)
+                            {
+                                overlayForm.HideOverlay();
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (overlayForm != null && overlayForm.IsHandleCreated)
+                        {
+                            overlayForm.HideOverlay();
+                        }
+                    }
+
+                    bool isGaming = currentActiveInterval != null && currentActiveInterval.Type.Equals("Gaming", StringComparison.OrdinalIgnoreCase);
+
                     // 1. Get all running processes
                     var allProcesses = Process.GetProcesses();
 
                     // 2. Global process blocklist check
-                    foreach (var proc in allProcesses)
+                    if (!isGaming)
+                    {
+                        foreach (var proc in allProcesses)
                     {
                         try
                         {
@@ -307,6 +414,7 @@ namespace Monitor
                         }
                         catch { /* Ignore errors for individual processes */ }
                     }
+                }
 
                     // Refresh processes list (since some might have been killed)
                     allProcesses = Process.GetProcesses();
@@ -472,6 +580,27 @@ namespace Monitor
                         {
                             screenshotIntervalSeconds = screenshotElement.GetInt32();
                             if (screenshotIntervalSeconds <= 0) screenshotIntervalSeconds = 60;
+                        }
+                        if (root.TryGetProperty("intervals", out var intervalsElement) && intervalsElement.ValueKind == JsonValueKind.Array)
+                        {
+                            var newIntervals = new List<TimeInterval>();
+                            foreach (var intervalElement in intervalsElement.EnumerateArray())
+                            {
+                                try
+                                {
+                                    string startStr = intervalElement.GetProperty("start").GetString();
+                                    string endStr = intervalElement.GetProperty("end").GetString();
+                                    string typeStr = intervalElement.GetProperty("type").GetString();
+
+                                    if (TimeSpan.TryParse(startStr, out TimeSpan start) && TimeSpan.TryParse(endStr, out TimeSpan end))
+                                    {
+                                        newIntervals.Add(new TimeInterval { Start = start, End = end, Type = typeStr });
+                                    }
+                                }
+                                catch { /* Ignore malformed intervals */ }
+                            }
+                            configuredIntervals = newIntervals;
+                            SaveIntervalsToRegistry();
                         }
                         if (root.TryGetProperty("version", out var versionElement))
                         {
@@ -865,6 +994,45 @@ namespace Monitor
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to save version to registry: {ex.Message}");
+            }
+        }
+
+        private static void SaveIntervalsToRegistry()
+        {
+            try
+            {
+                string json = JsonSerializer.Serialize(configuredIntervals);
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    key.SetValue("Intervals", json);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save intervals to registry: {ex.Message}");
+            }
+        }
+
+        private static void LoadIntervalsFromRegistry()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    var val = key.GetValue("Intervals");
+                    if (val != null)
+                    {
+                        var intervals = JsonSerializer.Deserialize<List<TimeInterval>>(val.ToString());
+                        if (intervals != null)
+                        {
+                            configuredIntervals = intervals;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load intervals from registry: {ex.Message}");
             }
         }
 
