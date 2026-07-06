@@ -1032,20 +1032,14 @@ namespace Monitor
         {
             try
             {
-                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+                if (version != null)
                 {
-                    var val = key.GetValue("Version");
-                    if (val != null) return val.ToString();
-                    
-                    // Default first-run version
-                    key.SetValue("Version", "1.0.0");
-                    return "1.0.0";
+                    return $"{version.Major}.{version.Minor}.{version.Build}";
                 }
             }
-            catch
-            {
-                return "1.0.0";
-            }
+            catch { }
+            return "1.0.0";
         }
 
         private static void SetLocalVersion(string version)

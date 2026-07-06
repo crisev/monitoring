@@ -82,6 +82,9 @@ namespace Monitor
             {
                 NativeMethods.ShowWindow(this.Handle, NativeMethods.SW_SHOWNOACTIVATE);
             }
+
+            // Force the window to be topmost without stealing focus
+            NativeMethods.SetWindowPos(this.Handle, new IntPtr(NativeMethods.HWND_TOPMOST), 0, 0, 0, 0, NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
         }
 
         public void HideOverlay()
@@ -102,8 +105,15 @@ namespace Monitor
     internal static class NativeMethods
     {
         public const int SW_SHOWNOACTIVATE = 4;
+        public const int HWND_TOPMOST = -1;
+        public const uint SWP_NOSIZE = 0x0001;
+        public const uint SWP_NOMOVE = 0x0002;
+        public const uint SWP_NOACTIVATE = 0x0010;
 
         [DllImport("user32.dll")]
         public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
     }
 }

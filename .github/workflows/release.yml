@@ -31,7 +31,7 @@ jobs:
         dotnet-version: '10.0.x'
         
     - name: Publish Monitor
-      run: dotnet publish Monitor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+      run: dotnet publish Monitor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:Version=${{ steps.tag_version.outputs.new_version }}
       
     - name: Create Release and Upload Asset
       uses: softprops/action-gh-release@v2
