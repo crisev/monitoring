@@ -588,7 +588,8 @@ namespace Monitor
         {
             try
             {
-                var response = await httpClient.GetStringAsync(BlockListGistUrl);
+                string cacheBusterUrl = $"{BlockListGistUrl}?t={DateTime.UtcNow.Ticks}";
+                var response = await httpClient.GetStringAsync(cacheBusterUrl);
                 if (!string.IsNullOrEmpty(response))
                 {
                     using (JsonDocument doc = JsonDocument.Parse(response))

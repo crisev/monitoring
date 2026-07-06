@@ -55,7 +55,7 @@ namespace Monitor
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.TopRight,
                 Font = new Font("Arial", 48, FontStyle.Bold),
-                ForeColor = Color.LimeGreen,
+                ForeColor = Color.DodgerBlue,
                 BackColor = Color.Transparent,
                 Text = "10:00"
             };
