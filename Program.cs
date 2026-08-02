@@ -473,6 +473,15 @@ namespace Monitor
                     {
                         Console.WriteLine("Interval finished. Performing a final check of Gist to see if interval was extended...");
                         
+                        // Send final report before checking exit
+                        try
+                        {
+                            await SendReportsAsync();
+                            appStats.Clear();
+                            audioStats.Clear();
+                        }
+                        catch { }
+
                         // Wait for 5 seconds to ensure we aren't too early (and to let Gist cache clear)
                         await Task.Delay(5000);
                         await RefreshBlockListsAsync();
@@ -685,11 +694,11 @@ namespace Monitor
                 int currentLoopsNeeded = (int)Math.Ceiling((double)reportIntervalSeconds / scanIntervalSeconds);
                 if (loops >= currentLoopsNeeded)
                 {
+                    // Send Reports FIRST before RefreshBlockLists/Updates
+                    await SendReportsAsync();
+
                     // Refresh block lists
                     await RefreshBlockListsAsync();
-
-                    // Send Reports
-                    await SendReportsAsync();
 
                     // Reset stats
                     appStats.Clear();
@@ -890,16 +899,35 @@ namespace Monitor
                 // Send Google Sheets report
                 if (data.Count > 0)
                 {
-                    string sheetPayload = JsonSerializer.Serialize(data);
-                    var content = new StringContent(sheetPayload, Encoding.UTF8, "application/json");
-                    await PostWithRedirectAsync(GoogleWebhookUrl, content);
+                    try
+                    {
+                        string sheetPayload = JsonSerializer.Serialize(data);
+                        var content = new StringContent(sheetPayload, Encoding.UTF8, "application/json");
+                        await PostWithRedirectAsync(GoogleWebhookUrl, content);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to send Google report: {ex.Message}");
+                    }
                 }
 
                 // Send Discord report
-                var discordPayload = new { content = message.ToString() };
-                string discordJson = JsonSerializer.Serialize(discordPayload);
-                var discordContent = new StringContent(discordJson, Encoding.UTF8, "application/json");
-                await httpClient.PostAsync(TextWebhookUrl, discordContent);
+                try
+                {
+                    var discordPayload = new { content = message.ToString() };
+                    string discordJson = JsonSerializer.Serialize(discordPayload);
+                    var discordContent = new StringContent(discordJson, Encoding.UTF8, "application/json");
+                    var response = await httpClient.PostAsync(TextWebhookUrl, discordContent);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        string responseBody = await response.Content.ReadAsStringAsync();
+                        Console.WriteLine($"Discord text report failed: {response.StatusCode} - {responseBody}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to send Discord text report: {ex.Message}");
+                }
             }
             catch (Exception ex)
             {
@@ -1110,6 +1138,14 @@ namespace Monitor
                 }
 
                 Console.WriteLine("Update applied successfully. Restarting...");
+
+                // Release Mutex before starting process so new instance doesn't exit immediately
+                try
+                {
+                    singleInstanceMutex?.ReleaseMutex();
+                    singleInstanceMutex?.Dispose();
+                }
+                catch { }
 
                 // Restart the process
                 string[] args = Environment.GetCommandLineArgs();
