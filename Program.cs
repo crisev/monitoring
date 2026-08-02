@@ -39,6 +39,13 @@
 
  dotnet run -- --visible
  dotnet publish -c Release 
+
+
+
+ TODO: 
+ - disable ability to change time; it is being used to always stay in the game mode
+
+ 
  * ======================================================================================
  */
 
@@ -208,6 +215,86 @@ namespace Monitor
             "ZOMBS.io"
         };
 
+        private static void ApplyWindowsTimeRegistryRestrictions()
+        {
+            try
+            {
+                // 1. Hide Date & Time page in Windows Settings app (Windows 10/11)
+                string[] explorerKeys = new string[]
+                {
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+                    @"SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+                };
+
+                foreach (var subKeyPath in explorerKeys)
+                {
+                    try
+                    {
+                        using (RegistryKey key = Registry.LocalMachine.CreateSubKey(subKeyPath))
+                        {
+                            if (key != null)
+                            {
+                                key.SetValue("SettingsPageVisibility", "hide:dateandtime", RegistryValueKind.String);
+                                key.SetValue("NoSetTime", 1, RegistryValueKind.DWord);
+                            }
+                        }
+                        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(subKeyPath))
+                        {
+                            if (key != null)
+                            {
+                                key.SetValue("SettingsPageVisibility", "hide:dateandtime", RegistryValueKind.String);
+                                key.SetValue("NoSetTime", 1, RegistryValueKind.DWord);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Registry restriction notice ({subKeyPath}): {ex.Message}");
+                    }
+                }
+
+                // 2. Disable Date and Time Control Panel Applet (timedate.cpl)
+                string[] controlPanelKeys = new string[]
+                {
+                    @"SOFTWARE\Policies\Microsoft\Windows\Control Panel",
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+                };
+
+                foreach (var subKeyPath in controlPanelKeys)
+                {
+                    try
+                    {
+                        using (RegistryKey key = Registry.LocalMachine.CreateSubKey(subKeyPath))
+                        {
+                            if (key != null)
+                            {
+                                key.SetValue("NoDateAndTimeUI", 1, RegistryValueKind.DWord);
+                                key.SetValue("NoSetTime", 1, RegistryValueKind.DWord);
+                            }
+                        }
+                        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(subKeyPath))
+                        {
+                            if (key != null)
+                            {
+                                key.SetValue("NoDateAndTimeUI", 1, RegistryValueKind.DWord);
+                                key.SetValue("NoSetTime", 1, RegistryValueKind.DWord);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Registry restriction notice ({subKeyPath}): {ex.Message}");
+                    }
+                }
+
+                Console.WriteLine("Windows Date & Time Registry policies applied successfully.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to apply Windows Time Registry policies: {ex.Message}");
+            }
+        }
+
         private static Dictionary<string, int> appStats = new Dictionary<string, int>();
         private static Dictionary<string, int> audioStats = new Dictionary<string, int>();
 
@@ -272,6 +359,9 @@ namespace Monitor
 
             // Protect the process from being terminated by the current user (requires Admin to kill)
             ProtectProcess();
+
+            // Enforce Windows Registry policies to disable Date & Time modification natively
+            ApplyWindowsTimeRegistryRestrictions();
 
             // Clean up backup file if it exists from a previous update
             try
@@ -364,7 +454,7 @@ namespace Monitor
                 try
                 {
                     TimeSpan now = DateTime.Now.TimeOfDay;
-                    var currentActiveInterval = configuredIntervals.FirstOrDefault(i => i.IsActive(now));
+                    var currentActiveInterval = GetActiveInterval(now);
                     
                     if (currentActiveInterval == null && isDebugMode)
                     {
@@ -381,24 +471,42 @@ namespace Monitor
 
                     if (wasInInterval && !isInInterval)
                     {
-                        Console.WriteLine("Interval finished and no other interval is active. Shutting down.");
-                        if (!isDebugMode && !noShutdown)
+                        Console.WriteLine("Interval finished. Performing a final check of Gist to see if interval was extended...");
+                        
+                        // Wait for 5 seconds to ensure we aren't too early (and to let Gist cache clear)
+                        await Task.Delay(5000);
+                        await RefreshBlockListsAsync();
+
+                        // Re-evaluate the active interval with fresh data
+                        now = DateTime.Now.TimeOfDay;
+                        currentActiveInterval = GetActiveInterval(now);
+                        isInInterval = currentActiveInterval != null;
+
+                        if (!isInInterval)
                         {
-                            try
+                            Console.WriteLine("Interval finished and no other interval is active. Shutting down.");
+                            if (!isDebugMode && !noShutdown)
                             {
-                                string shutdownExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shutdown.exe");
-                                Process.Start(new ProcessStartInfo(shutdownExe, "/s /f /t 5") { CreateNoWindow = true, UseShellExecute = false });
+                                try
+                                {
+                                    string shutdownExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shutdown.exe");
+                                    Process.Start(new ProcessStartInfo(shutdownExe, "/s /f /t 5") { CreateNoWindow = true, UseShellExecute = false });
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Failed to initiate shutdown: {ex.Message}");
+                                }
+                                Environment.Exit(0);
                             }
-                            catch (Exception ex)
+                            else
                             {
-                                Console.WriteLine($"Failed to initiate shutdown: {ex.Message}");
+                                Console.WriteLine("[DEBUG] Shutdown simulated since debug/no-shutdown mode is active.");
+                                Environment.Exit(0);
                             }
-                            Environment.Exit(0);
                         }
                         else
                         {
-                            Console.WriteLine("[DEBUG] Shutdown simulated since debug/no-shutdown mode is active.");
-                            Environment.Exit(0);
+                            Console.WriteLine("Shutdown aborted! Interval was extended.");
                         }
                     }
                     wasInInterval = isInInterval;
@@ -589,6 +697,21 @@ namespace Monitor
                     loops = 0;
                 }
             }
+        }
+
+        private static TimeInterval GetActiveInterval(TimeSpan now)
+        {
+            var activeIntervals = configuredIntervals.Where(i => i.IsActive(now)).ToList();
+            if (!activeIntervals.Any()) return null;
+
+            // Give priority to non-Gaming (e.g. School) restrictive intervals if there is an overlap
+            var nonGamingInterval = activeIntervals.FirstOrDefault(i => !i.Type.Equals("Gaming", StringComparison.OrdinalIgnoreCase));
+            if (nonGamingInterval != null)
+            {
+                return nonGamingInterval;
+            }
+
+            return activeIntervals.First();
         }
 
         private static string GetDisplayKey(string processName, string windowTitle)
@@ -1076,6 +1199,18 @@ namespace Monitor
         {
             try
             {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\MonitorApp"))
+                {
+                    if (key != null)
+                    {
+                        var val = key.GetValue("Version");
+                        if (val != null && !string.IsNullOrEmpty(val.ToString()))
+                        {
+                            return val.ToString();
+                        }
+                    }
+                }
+
                 var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
                 if (version != null)
                 {
