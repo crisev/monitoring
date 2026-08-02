@@ -417,6 +417,9 @@ namespace Monitor
 
             LoadIntervalsFromRegistry();
 
+            string localVer = GetLocalVersion();
+            await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{DateTime.Now:yyyy-MM-dd HH:mm:ss}`");
+
             // Always try to fetch the latest configuration and intervals from the Gist first
             await RefreshBlockListsAsync();
 
@@ -425,6 +428,8 @@ namespace Monitor
 
             if (activeInterval == null && configuredIntervals.Count > 0)
             {
+                await SendDiscordNotificationAsync($"🔴 **Application Shutting Down**\n- **User:** `{currentUser}`\n- **Reason:** `No active time interval`\n- **Time:** `{DateTime.Now:HH:mm:ss}`");
+
                 if (!isDebugMode && !noShutdown)
                 {
                     Console.WriteLine("No active interval. Shutting down in 5 seconds...");
@@ -494,6 +499,8 @@ namespace Monitor
                         if (!isInInterval)
                         {
                             Console.WriteLine("Interval finished and no other interval is active. Shutting down.");
+                            await SendDiscordNotificationAsync($"🔴 **Application Shutting Down**\n- **User:** `{currentUser}`\n- **Reason:** `Active time interval finished`\n- **Time:** `{DateTime.Now:HH:mm:ss}`");
+
                             if (!isDebugMode && !noShutdown)
                             {
                                 try
@@ -935,6 +942,21 @@ namespace Monitor
             }
         }
 
+        private static async Task SendDiscordNotificationAsync(string messageText)
+        {
+            try
+            {
+                var payload = new { content = messageText };
+                string json = JsonSerializer.Serialize(payload);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                await httpClient.PostAsync(TextWebhookUrl, content);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to send Discord notification: {ex.Message}");
+            }
+        }
+
         private static async Task<HttpResponseMessage> PostWithRedirectAsync(string url, HttpContent content)
         {
             string currentUrl = url;
@@ -1063,6 +1085,7 @@ namespace Monitor
                 string newExe = currentExe + ".new";
 
                 Console.WriteLine($"Downloading update from {updateUrl} to {newExe}...");
+                await SendDiscordNotificationAsync($"📥 **Downloading Update**\n- **User:** `{currentUser}`\n- **Target Version:** `{remoteVersion}`\n- **URL:** `{updateUrl}`");
 
                 // Download the file (automatically follows redirects for public GitHub releases)
                 using (var response = await httpClient.GetAsync(updateUrl))
@@ -1118,6 +1141,7 @@ namespace Monitor
                 }
 
                 Console.WriteLine("Applying update...");
+                await SendDiscordNotificationAsync($"💾 **Applying Update Executable**\n- **User:** `{currentUser}`\n- **Target Version:** `{remoteVersion}`\n- **Status:** Overwriting executable on disk and restarting process.");
 
                 // Rename running to .bak, and .new to original name
                 if (File.Exists(backupExe))
