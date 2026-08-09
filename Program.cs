@@ -187,6 +187,9 @@ namespace Monitor
         { 
             "duckduckgo",
             "opera",
+            "firefox",
+            "tor",
+            "tor-browser",
             "GettingOverIt",
             "FPSChess-Win64-Shipping",
             "cs2",
@@ -298,7 +301,147 @@ namespace Monitor
         private static Dictionary<string, int> appStats = new Dictionary<string, int>();
         private static Dictionary<string, int> audioStats = new Dictionary<string, int>();
 
-        private static DateTime lastScreenshotTime = DateTime.MinValue;
+        private static readonly Stopwatch networkStopwatch = new Stopwatch();
+        private static DateTime syncedUtcTime = DateTime.MinValue;
+        private static bool isNetworkTimeSynced = false;
+        private static readonly object timeSyncLock = new object();
+        private static readonly TimeZoneInfo bucharestTimeZoneInfo = GetBucharestTimeZoneInfo();
+        private static readonly Stopwatch screenshotStopwatch = Stopwatch.StartNew();
+
+        private static TimeZoneInfo GetBucharestTimeZoneInfo()
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById("Europe/Bucharest");
+            }
+            catch
+            {
+                try
+                {
+                    return TimeZoneInfo.FindSystemTimeZoneById("GTB Standard Time");
+                }
+                catch
+                {
+                    return TimeZoneInfo.CreateCustomTimeZone("Bucharest Custom", TimeSpan.FromHours(2), "Bucharest Time", "Bucharest Time");
+                }
+            }
+        }
+
+        private static void SyncNetworkTimeFromResponse(HttpResponseMessage response)
+        {
+            try
+            {
+                if (response != null && response.Headers != null && response.Headers.Date.HasValue)
+                {
+                    lock (timeSyncLock)
+                    {
+                        syncedUtcTime = response.Headers.Date.Value.UtcDateTime;
+                        networkStopwatch.Restart();
+                        isNetworkTimeSynced = true;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static DateTime GetTrueUtcTime()
+        {
+            lock (timeSyncLock)
+            {
+                if (isNetworkTimeSynced && networkStopwatch.IsRunning)
+                {
+                    return syncedUtcTime.Add(networkStopwatch.Elapsed);
+                }
+            }
+            return DateTime.UtcNow;
+        }
+
+        private static DateTime GetTrueBucharestTime()
+        {
+            DateTime utc = GetTrueUtcTime();
+            try
+            {
+                return TimeZoneInfo.ConvertTimeFromUtc(utc, bucharestTimeZoneInfo);
+            }
+            catch
+            {
+                return utc.AddHours(2);
+            }
+        }
+
+        private static void KillBlockedProcesses()
+        {
+            try
+            {
+                var allProcesses = Process.GetProcesses();
+                foreach (var proc in allProcesses)
+                {
+                    try
+                    {
+                        string procName = proc.ProcessName;
+                        string mainTitle = "";
+                        try
+                        {
+                            mainTitle = proc.MainWindowTitle;
+                        }
+                        catch { /* Ignore access denied on system processes */ }
+
+                        bool isBlocked = false;
+
+                        if (blockedProcessNames.Contains(procName, StringComparer.OrdinalIgnoreCase))
+                        {
+                            Console.WriteLine($"BLOCKED: Process '{procName}' is forbidden - killing.");
+                            proc.Kill(true);
+                            isBlocked = true;
+                        }
+
+                        if (!isBlocked && !string.IsNullOrEmpty(mainTitle))
+                        {
+                            foreach (var keyword in blockedPageTitles)
+                            {
+                                if (mainTitle.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    Console.WriteLine($"BLOCKED: Title '{mainTitle}' contains keyword '{keyword}' - killing process '{procName}'.");
+                                    proc.Kill(true);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { /* Ignore errors for individual processes */ }
+                }
+            }
+            catch { }
+        }
+
+        private static async Task InitiateContinuousShutdownAsync(string reason)
+        {
+            Console.WriteLine($"Initiating continuous shutdown sequence: {reason}");
+            await SendDiscordNotificationAsync($"🔴 **Application Shutting Down**\n- **User:** `{currentUser}`\n- **Reason:** `{reason}`\n- **Time:** `{GetTrueBucharestTime():HH:mm:ss}`");
+
+            if (!isDebugMode && !noShutdown)
+            {
+                string shutdownExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shutdown.exe");
+                while (true)
+                {
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo(shutdownExe, "/s /f /t 1") { CreateNoWindow = true, UseShellExecute = false });
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to initiate shutdown: {ex.Message}");
+                    }
+                    KillBlockedProcesses();
+                    await Task.Delay(1000);
+                }
+            }
+            else
+            {
+                Console.WriteLine("[DEBUG] Shutdown simulated since debug/no-shutdown mode is active.");
+                Environment.Exit(0);
+            }
+        }
 
         private static readonly HttpClient httpClient = new HttpClient();
         private static readonly HttpClient redirectHttpClient = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
@@ -418,37 +561,34 @@ namespace Monitor
             LoadIntervalsFromRegistry();
 
             string localVer = GetLocalVersion();
-            await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{DateTime.Now:yyyy-MM-dd HH:mm:ss}`");
+            await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}`");
 
-            // Always try to fetch the latest configuration and intervals from the Gist first
-            await RefreshBlockListsAsync();
+            // Always try to fetch the latest configuration and intervals from the Gist first (retrying on startup in case network is initializing)
+            bool gistFetched = false;
+            int maxStartupRetries = 6;
+            for (int attempt = 1; attempt <= maxStartupRetries; attempt++)
+            {
+                gistFetched = await RefreshBlockListsAsync();
+                if (gistFetched)
+                {
+                    Console.WriteLine($"Successfully updated configuration from Gist on startup (attempt {attempt}).");
+                    break;
+                }
 
-            TimeSpan currentTime = DateTime.Now.TimeOfDay;
-            var activeInterval = configuredIntervals.FirstOrDefault(i => i.IsActive(currentTime));
+                if (attempt < maxStartupRetries)
+                {
+                    Console.WriteLine($"Startup Gist fetch attempt {attempt} failed (network initializing). Retrying in 5 seconds...");
+                    await Task.Delay(5000);
+                }
+            }
+
+            TimeSpan currentTime = GetTrueBucharestTime().TimeOfDay;
+            var activeInterval = GetActiveInterval(currentTime);
 
             if (activeInterval == null && configuredIntervals.Count > 0)
             {
-                await SendDiscordNotificationAsync($"🔴 **Application Shutting Down**\n- **User:** `{currentUser}`\n- **Reason:** `No active time interval`\n- **Time:** `{DateTime.Now:HH:mm:ss}`");
-
-                if (!isDebugMode && !noShutdown)
-                {
-                    Console.WriteLine("No active interval. Shutting down in 5 seconds...");
-                    try
-                    {
-                        string shutdownExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shutdown.exe");
-                        Process.Start(new ProcessStartInfo(shutdownExe, "/s /f /t 5") { CreateNoWindow = true, UseShellExecute = false });
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Failed to initiate shutdown: {ex.Message}");
-                    }
-                    return;
-                }
-                else
-                {
-                    Console.WriteLine("No active interval. Shutdown bypassed due to debug/no-shutdown flags. Exiting app.");
-                    return;
-                }
+                await InitiateContinuousShutdownAsync("No active time interval");
+                return;
             }
             
             wasInInterval = activeInterval != null || isDebugMode;
@@ -458,7 +598,7 @@ namespace Monitor
             {
                 try
                 {
-                    TimeSpan now = DateTime.Now.TimeOfDay;
+                    TimeSpan now = GetTrueBucharestTime().TimeOfDay;
                     var currentActiveInterval = GetActiveInterval(now);
                     
                     if (currentActiveInterval == null && isDebugMode)
@@ -492,33 +632,15 @@ namespace Monitor
                         await RefreshBlockListsAsync();
 
                         // Re-evaluate the active interval with fresh data
-                        now = DateTime.Now.TimeOfDay;
+                        now = GetTrueBucharestTime().TimeOfDay;
                         currentActiveInterval = GetActiveInterval(now);
                         isInInterval = currentActiveInterval != null;
 
                         if (!isInInterval)
                         {
                             Console.WriteLine("Interval finished and no other interval is active. Shutting down.");
-                            await SendDiscordNotificationAsync($"🔴 **Application Shutting Down**\n- **User:** `{currentUser}`\n- **Reason:** `Active time interval finished`\n- **Time:** `{DateTime.Now:HH:mm:ss}`");
-
-                            if (!isDebugMode && !noShutdown)
-                            {
-                                try
-                                {
-                                    string shutdownExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shutdown.exe");
-                                    Process.Start(new ProcessStartInfo(shutdownExe, "/s /f /t 5") { CreateNoWindow = true, UseShellExecute = false });
-                                }
-                                catch (Exception ex)
-                                {
-                                    Console.WriteLine($"Failed to initiate shutdown: {ex.Message}");
-                                }
-                                Environment.Exit(0);
-                            }
-                            else
-                            {
-                                Console.WriteLine("[DEBUG] Shutdown simulated since debug/no-shutdown mode is active.");
-                                Environment.Exit(0);
-                            }
+                            await InitiateContinuousShutdownAsync("Active time interval finished");
+                            return;
                         }
                         else
                         {
@@ -565,51 +687,13 @@ namespace Monitor
 
                     bool isGaming = currentActiveInterval != null && currentActiveInterval.Type.Equals("Gaming", StringComparison.OrdinalIgnoreCase);
 
-                    // 1. Get all running processes
-                    var allProcesses = Process.GetProcesses();
-
-                    // 2. Global process blocklist check
+                    // 1. Global process blocklist check
                     if (!isGaming)
                     {
-                        foreach (var proc in allProcesses)
-                    {
-                        try
-                        {
-                            string procName = proc.ProcessName;
-                            string mainTitle = "";
-                            try
-                            {
-                                mainTitle = proc.MainWindowTitle;
-                            }
-                            catch { /* Ignore access denied on system processes */ }
-
-                            bool isBlocked = false;
-
-                            // Check process name
-                            if (blockedProcessNames.Contains(procName, StringComparer.OrdinalIgnoreCase))
-                            {
-                                Console.WriteLine($"BLOCKED: Process '{procName}' is forbidden - killing.");
-                                proc.Kill(true);
-                                isBlocked = true;
-                            }
-
-                            // Check window title
-                            if (!isBlocked && !string.IsNullOrEmpty(mainTitle))
-                            {
-                                foreach (var keyword in blockedPageTitles)
-                                {
-                                    if (mainTitle.Contains(keyword, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        Console.WriteLine($"BLOCKED: Title '{mainTitle}' contains keyword '{keyword}' - killing process '{procName}'.");
-                                        proc.Kill(true);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        catch { /* Ignore errors for individual processes */ }
+                        KillBlockedProcesses();
                     }
-                }
+
+                    var allProcesses = Process.GetProcesses();
 
                     // Refresh processes list (since some might have been killed)
                     allProcesses = Process.GetProcesses();
@@ -684,9 +768,9 @@ namespace Monitor
                     }
 
                     // 5. Periodic Screenshot to Discord
-                    if ((DateTime.Now - lastScreenshotTime).TotalSeconds >= screenshotIntervalSeconds)
+                    if (screenshotStopwatch.Elapsed.TotalSeconds >= screenshotIntervalSeconds)
                     {
-                        lastScreenshotTime = DateTime.Now;
+                        screenshotStopwatch.Restart();
                         await CaptureAndSendScreenshotAsync();
                     }
                 }
@@ -720,11 +804,11 @@ namespace Monitor
             var activeIntervals = configuredIntervals.Where(i => i.IsActive(now)).ToList();
             if (!activeIntervals.Any()) return null;
 
-            // Give priority to non-Gaming (e.g. School) restrictive intervals if there is an overlap
-            var nonGamingInterval = activeIntervals.FirstOrDefault(i => !i.Type.Equals("Gaming", StringComparison.OrdinalIgnoreCase));
-            if (nonGamingInterval != null)
+            // Give priority to Gaming intervals if there is an overlap
+            var gamingInterval = activeIntervals.FirstOrDefault(i => i.Type.Equals("Gaming", StringComparison.OrdinalIgnoreCase));
+            if (gamingInterval != null)
             {
-                return nonGamingInterval;
+                return gamingInterval;
             }
 
             return activeIntervals.First();
@@ -748,14 +832,30 @@ namespace Monitor
             return displayKey;
         }
 
-        private static async Task RefreshBlockListsAsync()
+        private static async Task<bool> RefreshBlockListsAsync()
         {
             try
             {
-                string cacheBusterUrl = $"{BlockListGistUrl}?t={DateTime.UtcNow.Ticks}";
-                var response = await httpClient.GetStringAsync(cacheBusterUrl);
-                if (!string.IsNullOrEmpty(response))
+                string cacheBusterUrl = $"{BlockListGistUrl}?t={GetTrueUtcTime().Ticks}";
+                using (var request = new HttpRequestMessage(HttpMethod.Get, cacheBusterUrl))
                 {
+                    request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue
+                    {
+                        NoCache = true,
+                        NoStore = true
+                    };
+
+                    var httpResponse = await httpClient.SendAsync(request);
+                    SyncNetworkTimeFromResponse(httpResponse);
+                    if (!httpResponse.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine($"Gist request failed with status code: {httpResponse.StatusCode}");
+                        return false;
+                    }
+
+                    string response = await httpResponse.Content.ReadAsStringAsync();
+                    if (string.IsNullOrEmpty(response)) return false;
+
                     using (JsonDocument doc = JsonDocument.Parse(response))
                     {
                         var root = doc.RootElement;
@@ -826,12 +926,14 @@ namespace Monitor
                                 await UpdateApplicationAsync(remoteVersion);
                             }
                         }
+                        return true;
                     }
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to fetch block lists from gist: {ex.Message}");
+                return false;
             }
         }
 
@@ -845,7 +947,7 @@ namespace Monitor
                 StringBuilder message = new StringBuilder();
                 message.AppendLine("**Raport Activitate**");
                 message.AppendLine($"**Utilizator:** {currentUser}");
-                message.AppendLine($"**Ora:** {DateTime.Now:HH:mm}");
+                message.AppendLine($"**Ora:** {GetTrueBucharestTime():HH:mm}");
                 message.AppendLine();
 
                 // Foreground active stats
@@ -949,7 +1051,8 @@ namespace Monitor
                 var payload = new { content = messageText };
                 string json = JsonSerializer.Serialize(payload);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
-                await httpClient.PostAsync(TextWebhookUrl, content);
+                var response = await httpClient.PostAsync(TextWebhookUrl, content);
+                SyncNetworkTimeFromResponse(response);
             }
             catch (Exception ex)
             {
@@ -970,6 +1073,7 @@ namespace Monitor
                 var newContent = new StringContent(jsonString, Encoding.UTF8, "application/json");
 
                 response = await redirectHttpClient.PostAsync(currentUrl, newContent);
+                SyncNetworkTimeFromResponse(response);
 
                 if (response.StatusCode == System.Net.HttpStatusCode.Redirect ||
                     response.StatusCode == System.Net.HttpStatusCode.Found ||
@@ -1041,7 +1145,7 @@ namespace Monitor
                 {
                     var payload = new 
                     { 
-                        content = $"**Monitorizare Ecran**\n**Utilizator:** {currentUser}\n**Ora:** {DateTime.Now:HH:mm:ss}" 
+                        content = $"**Monitorizare Ecran**\n**Utilizator:** {currentUser}\n**Ora:** {GetTrueBucharestTime():HH:mm:ss}" 
                     };
                     string jsonPayload = JsonSerializer.Serialize(payload);
                     content.Add(new StringContent(jsonPayload, Encoding.UTF8, "application/json"), "payload_json");
@@ -1051,6 +1155,7 @@ namespace Monitor
                     content.Add(imageContent, "file", "screenshot.png");
 
                     var response = await httpClient.PostAsync(ImageWebhookUrl, content);
+                    SyncNetworkTimeFromResponse(response);
                     if (!response.IsSuccessStatusCode)
                     {
                         string responseBody = await response.Content.ReadAsStringAsync();
@@ -1352,13 +1457,13 @@ namespace Monitor
                         var dacl = new RawSecurityDescriptor(sd, 0);
                         var currentUserSid = WindowsIdentity.GetCurrent().User;
                         
-                        // Deny PROCESS_TERMINATE (0x0001) to the current user
-                        dacl.DiscretionaryAcl.InsertAce(0, new CommonAce(AceFlags.None, AceQualifier.AccessDenied, 0x0001, currentUserSid, false, null));
+                        // Deny PROCESS_TERMINATE (0x0001) and PROCESS_SUSPEND_RESUME (0x0800) to the current user
+                        dacl.DiscretionaryAcl.InsertAce(0, new CommonAce(AceFlags.None, AceQualifier.AccessDenied, 0x0001 | 0x0800, currentUserSid, false, null));
                         
                         byte[] newSd = new byte[dacl.BinaryLength];
                         dacl.GetBinaryForm(newSd, 0);
                         SetKernelObjectSecurity(hProcess, 4, newSd);
-                        Console.WriteLine("Process termination protection applied.");
+                        Console.WriteLine("Process termination and suspension protection applied.");
                     }
                 }
             }
