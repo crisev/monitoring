@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Monitor
 {
@@ -20,5 +21,14 @@ namespace Monitor
                 return time >= Start || time < End;
             }
         }
+    }
+
+    public class DailyStatsData
+    {
+        public string Date { get; set; } = "";
+        public int TotalGamingSeconds { get; set; } = 0;
+        public Dictionary<string, int> AppSeconds { get; set; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> AudioSeconds { get; set; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> GameSeconds { get; set; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     }
 }

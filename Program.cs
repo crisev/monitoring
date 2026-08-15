@@ -42,9 +42,9 @@
 
 
 
- TODO: 
- - disable ability to change time; it is being used to always stay in the game mode
-
+ *  TODO: 
+ *  - Remote Config Option A (Discord Bot): Interactive buttons/commands via Cloudflare Worker + GitHub Gist API (GitHub PAT with gist scope; 0 changes to Monitor.exe).
+ *  - Remote Config Option B (Mobile Web App): React/Next.js UI backed by Firebase Realtime Database (public read for Monitor.exe, email/pass auth write for admin).
  
  * ======================================================================================
  */
@@ -305,7 +305,7 @@ namespace Monitor
         private static DateTime syncedUtcTime = DateTime.MinValue;
         private static bool isNetworkTimeSynced = false;
         private static readonly object timeSyncLock = new object();
-        private static readonly TimeZoneInfo bucharestTimeZoneInfo = GetBucharestTimeZoneInfo();
+        private static TimeZoneInfo bucharestTimeZoneInfo = GetBucharestTimeZoneInfo();
         private static readonly Stopwatch screenshotStopwatch = Stopwatch.StartNew();
 
         private static TimeZoneInfo GetBucharestTimeZoneInfo()
@@ -417,6 +417,14 @@ namespace Monitor
         private static async Task InitiateContinuousShutdownAsync(string reason)
         {
             Console.WriteLine($"Initiating continuous shutdown sequence: {reason}");
+            try
+            {
+                await SendDailyReportAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to send daily report before shutdown: {ex.Message}");
+            }
             await SendDiscordNotificationAsync($"🔴 **Application Shutting Down**\n- **User:** `{currentUser}`\n- **Reason:** `{reason}`\n- **Time:** `{GetTrueBucharestTime():HH:mm:ss}`");
 
             if (!isDebugMode && !noShutdown)
@@ -457,6 +465,11 @@ namespace Monitor
         private static int scanIntervalSeconds = 5;
         private static int reportIntervalSeconds = 360;
         private static int screenshotIntervalSeconds = 60;
+        private static int dailyGameTimeMinutes = 0;
+        private static int dailyReportIntervalMinutes = 30;
+        private static readonly Stopwatch dailyReportStopwatch = Stopwatch.StartNew();
+        private static DailyStatsData currentDailyStats = new DailyStatsData();
+        private static bool gameQuotaExceededNotified = false;
 
         private static Mutex singleInstanceMutex = new Mutex(true, "{8F6F0AC4-B9A1-45fd-A8CF-72F04E6BDE8F}");
 
@@ -559,6 +572,7 @@ namespace Monitor
             int loops = 0;
 
             LoadIntervalsFromRegistry();
+            EnsureCurrentDayStats();
 
             string localVer = GetLocalVersion();
             await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}`");
@@ -598,6 +612,8 @@ namespace Monitor
             {
                 try
                 {
+                    EnsureCurrentDayStats();
+
                     TimeSpan now = GetTrueBucharestTime().TimeOfDay;
                     var currentActiveInterval = GetActiveInterval(now);
                     
@@ -618,12 +634,13 @@ namespace Monitor
                     {
                         Console.WriteLine("Interval finished. Performing a final check of Gist to see if interval was extended...");
                         
-                        // Send final report before checking exit
+                        // Send final reports before checking exit
                         try
                         {
                             await SendReportsAsync();
                             appStats.Clear();
                             audioStats.Clear();
+                            await SendDailyReportAsync();
                         }
                         catch { }
 
@@ -685,12 +702,46 @@ namespace Monitor
                         }
                     }
 
-                    bool isGaming = currentActiveInterval != null && currentActiveInterval.Type.Equals("Gaming", StringComparison.OrdinalIgnoreCase);
+                    bool isGamingInterval = currentActiveInterval != null && currentActiveInterval.Type.Equals("Gaming", StringComparison.OrdinalIgnoreCase);
+                    bool isSchoolInterval = currentActiveInterval != null && currentActiveInterval.Type.Equals("School", StringComparison.OrdinalIgnoreCase);
 
-                    // 1. Global process blocklist check
-                    if (!isGaming)
+                    // Determine whether gaming / blocked applications are allowed:
+                    // 1. In Gaming interval: games are always allowed (and game time continues to accumulate).
+                    // 2. In School interval: games are allowed only while dailyGameTime > 0 and counted gaming time is below dailyGameTime.
+                    // 3. When counted gaming time exceeds dailyGameTime, behaves like standard School mode (kills blocked processes).
+                    bool allowGames = false;
+                    if (isGamingInterval)
+                    {
+                        allowGames = true;
+                    }
+                    else if (isSchoolInterval)
+                    {
+                        if (dailyGameTimeMinutes > 0 && currentDailyStats.TotalGamingSeconds < dailyGameTimeMinutes * 60)
+                        {
+                            allowGames = true;
+                        }
+                        else
+                        {
+                            allowGames = false;
+                        }
+                    }
+                    else if (isDebugMode)
+                    {
+                        allowGames = true;
+                    }
+
+                    // 1. Process blocklist enforcement
+                    if (!allowGames)
                     {
                         KillBlockedProcesses();
+                    }
+
+                    // Notify if daily quota has just been reached in School mode
+                    if (!gameQuotaExceededNotified && isSchoolInterval && dailyGameTimeMinutes > 0 && currentDailyStats.TotalGamingSeconds >= dailyGameTimeMinutes * 60)
+                    {
+                        gameQuotaExceededNotified = true;
+                        Console.WriteLine($"Daily game quota reached ({currentDailyStats.TotalGamingSeconds / 60}m / {dailyGameTimeMinutes}m). Activating School mode restrictions.");
+                        await SendDiscordNotificationAsync($"⏳ **Timp de Gaming Epuizat**\n- **Utilizator:** `{currentUser}`\n- **Timp Utilizat:** `{currentDailyStats.TotalGamingSeconds / 60}m` / `{dailyGameTimeMinutes}m`\n- **Status:** Modul Școală a fost activat (aplicațiile/site-urile de jocuri sunt blocate).");
                     }
 
                     var allProcesses = Process.GetProcesses();
@@ -719,9 +770,24 @@ namespace Monitor
                                 string[] ignoredApps = { "Idle", "LockApp", "SearchUI" };
                                 if (!ignoredApps.Contains(name, StringComparer.OrdinalIgnoreCase))
                                 {
+                                    // Periodic incremental stats
                                     if (!appStats.ContainsKey(displayKey))
                                         appStats[displayKey] = 0;
                                     appStats[displayKey] += scanIntervalSeconds;
+
+                                    // Daily app stats
+                                    if (!currentDailyStats.AppSeconds.ContainsKey(displayKey))
+                                        currentDailyStats.AppSeconds[displayKey] = 0;
+                                    currentDailyStats.AppSeconds[displayKey] += scanIntervalSeconds;
+
+                                    // Check if this application/window is a game or blocked site
+                                    if (IsGameOrBlockedActivity(name, windowTitle))
+                                    {
+                                        currentDailyStats.TotalGamingSeconds += scanIntervalSeconds;
+                                        if (!currentDailyStats.GameSeconds.ContainsKey(displayKey))
+                                            currentDailyStats.GameSeconds[displayKey] = 0;
+                                        currentDailyStats.GameSeconds[displayKey] += scanIntervalSeconds;
+                                    }
                                 }
                             }
                         }
@@ -760,18 +826,34 @@ namespace Monitor
                             string[] ignoredApps = { "Idle", "LockApp", "SearchUI" };
                             if (!ignoredApps.Contains(name, StringComparer.OrdinalIgnoreCase))
                             {
+                                // Periodic incremental audio stats
                                 if (!audioStats.ContainsKey(displayKey))
                                     audioStats[displayKey] = 0;
                                 audioStats[displayKey] += scanIntervalSeconds;
+
+                                // Daily audio stats
+                                if (!currentDailyStats.AudioSeconds.ContainsKey(displayKey))
+                                    currentDailyStats.AudioSeconds[displayKey] = 0;
+                                currentDailyStats.AudioSeconds[displayKey] += scanIntervalSeconds;
                             }
                         }
                     }
+
+                    // Persist daily stats to registry on each active scan
+                    SaveDailyStatsToRegistry();
 
                     // 5. Periodic Screenshot to Discord
                     if (screenshotStopwatch.Elapsed.TotalSeconds >= screenshotIntervalSeconds)
                     {
                         screenshotStopwatch.Restart();
                         await CaptureAndSendScreenshotAsync();
+                    }
+
+                    // 6. Periodic Daily Stats Report to Discord (e.g. every 30 minutes)
+                    if (dailyReportStopwatch.Elapsed.TotalMinutes >= dailyReportIntervalMinutes)
+                    {
+                        dailyReportStopwatch.Restart();
+                        await SendDailyReportAsync();
                     }
                 }
                 catch (Exception ex)
@@ -832,6 +914,29 @@ namespace Monitor
             return displayKey;
         }
 
+        private static bool IsGameOrBlockedActivity(string processName, string windowTitle)
+        {
+            if (string.IsNullOrEmpty(processName)) return false;
+
+            if (blockedProcessNames.Contains(processName, StringComparer.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrEmpty(windowTitle))
+            {
+                foreach (var keyword in blockedPageTitles)
+                {
+                    if (windowTitle.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         private static async Task<bool> RefreshBlockListsAsync()
         {
             try
@@ -877,6 +982,18 @@ namespace Monitor
                         {
                             updateUrl = downloadUrlElement.GetString();
                         }
+                        if (root.TryGetProperty("timeZone", out var timeZoneElement))
+                        {
+                            string tzStr = timeZoneElement.GetString();
+                            if (!string.IsNullOrEmpty(tzStr))
+                            {
+                                try
+                                {
+                                    bucharestTimeZoneInfo = TimeZoneInfo.FindSystemTimeZoneById(tzStr);
+                                }
+                                catch { }
+                            }
+                        }
                         if (root.TryGetProperty("scanIntervalSeconds", out var scanElement) && scanElement.ValueKind == JsonValueKind.Number)
                         {
                             scanIntervalSeconds = scanElement.GetInt32();
@@ -891,6 +1008,16 @@ namespace Monitor
                         {
                             screenshotIntervalSeconds = screenshotElement.GetInt32();
                             if (screenshotIntervalSeconds <= 0) screenshotIntervalSeconds = 60;
+                        }
+                        if ((root.TryGetProperty("dailyGameTimeMinutes", out var gameTimeElement) || root.TryGetProperty("dailyGameTime", out gameTimeElement)) && gameTimeElement.ValueKind == JsonValueKind.Number)
+                        {
+                            dailyGameTimeMinutes = gameTimeElement.GetInt32();
+                            if (dailyGameTimeMinutes < 0) dailyGameTimeMinutes = 0;
+                        }
+                        if (root.TryGetProperty("dailyReportIntervalMinutes", out var dailyReportElement) && dailyReportElement.ValueKind == JsonValueKind.Number)
+                        {
+                            dailyReportIntervalMinutes = dailyReportElement.GetInt32();
+                            if (dailyReportIntervalMinutes <= 0) dailyReportIntervalMinutes = 30;
                         }
                         if (root.TryGetProperty("intervals", out var intervalsElement) && intervalsElement.ValueKind == JsonValueKind.Array)
                         {
@@ -1437,6 +1564,228 @@ namespace Monitor
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to load intervals from registry: {ex.Message}");
+            }
+        }
+
+        private static void EnsureCurrentDayStats()
+        {
+            string today = GetTrueBucharestTime().ToString("yyyy-MM-dd");
+            if (currentDailyStats == null || currentDailyStats.Date != today)
+            {
+                LoadDailyStatsFromRegistry();
+                if (currentDailyStats == null || currentDailyStats.Date != today)
+                {
+                    Console.WriteLine($"Starting fresh daily stats for date: {today}");
+                    currentDailyStats = new DailyStatsData
+                    {
+                        Date = today,
+                        TotalGamingSeconds = 0,
+                        AppSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+                        AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+                        GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                    };
+                    gameQuotaExceededNotified = false;
+                    SaveDailyStatsToRegistry();
+                }
+            }
+        }
+
+        private static void SaveDailyStatsToRegistry()
+        {
+            try
+            {
+                if (currentDailyStats == null) return;
+                string json = JsonSerializer.Serialize(currentDailyStats);
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    key.SetValue("DailyStats", json);
+                    key.SetValue("DailyStatsDate", currentDailyStats.Date ?? "");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save daily stats to registry: {ex.Message}");
+            }
+        }
+
+        private static void LoadDailyStatsFromRegistry()
+        {
+            try
+            {
+                string today = GetTrueBucharestTime().ToString("yyyy-MM-dd");
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    var dateVal = key.GetValue("DailyStatsDate");
+                    var statsVal = key.GetValue("DailyStats");
+
+                    if (dateVal != null && dateVal.ToString() == today && statsVal != null)
+                    {
+                        var loaded = JsonSerializer.Deserialize<DailyStatsData>(statsVal.ToString());
+                        if (loaded != null && loaded.Date == today)
+                        {
+                            currentDailyStats = loaded;
+                            if (currentDailyStats.AppSeconds == null)
+                                currentDailyStats.AppSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                            if (currentDailyStats.AudioSeconds == null)
+                                currentDailyStats.AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                            if (currentDailyStats.GameSeconds == null)
+                                currentDailyStats.GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+                            Console.WriteLine($"Loaded existing daily stats for {today}: Gaming={currentDailyStats.TotalGamingSeconds}s");
+                            return;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load daily stats from registry: {ex.Message}");
+            }
+        }
+
+        private static async Task SendDiscordChunkedMessageAsync(string fullMessage)
+        {
+            if (string.IsNullOrEmpty(fullMessage)) return;
+
+            if (fullMessage.Length <= 1900)
+            {
+                var discordPayload = new { content = fullMessage };
+                string discordJson = JsonSerializer.Serialize(discordPayload);
+                var discordContent = new StringContent(discordJson, Encoding.UTF8, "application/json");
+                var response = await httpClient.PostAsync(TextWebhookUrl, discordContent);
+                SyncNetworkTimeFromResponse(response);
+                return;
+            }
+
+            var lines = fullMessage.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            StringBuilder currentChunk = new StringBuilder();
+
+            foreach (var line in lines)
+            {
+                if (currentChunk.Length + line.Length + 2 > 1900)
+                {
+                    if (currentChunk.Length > 0)
+                    {
+                        var discordPayload = new { content = currentChunk.ToString() };
+                        string discordJson = JsonSerializer.Serialize(discordPayload);
+                        var discordContent = new StringContent(discordJson, Encoding.UTF8, "application/json");
+                        var response = await httpClient.PostAsync(TextWebhookUrl, discordContent);
+                        SyncNetworkTimeFromResponse(response);
+                        currentChunk.Clear();
+                        await Task.Delay(250);
+                    }
+                }
+                currentChunk.AppendLine(line);
+            }
+
+            if (currentChunk.Length > 0)
+            {
+                var discordPayload = new { content = currentChunk.ToString() };
+                string discordJson = JsonSerializer.Serialize(discordPayload);
+                var discordContent = new StringContent(discordJson, Encoding.UTF8, "application/json");
+                var response = await httpClient.PostAsync(TextWebhookUrl, discordContent);
+                SyncNetworkTimeFromResponse(response);
+            }
+        }
+
+        private static async Task SendDailyReportAsync()
+        {
+            try
+            {
+                EnsureCurrentDayStats();
+                if (currentDailyStats == null) return;
+
+                int totalGamingSec = currentDailyStats.TotalGamingSeconds;
+                int gamingMin = totalGamingSec / 60;
+                int gamingRemSec = totalGamingSec % 60;
+
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine("📊 **Raport Zilnic Activitate**");
+                sb.AppendLine($"- **Data:** `{currentDailyStats.Date}`");
+                sb.AppendLine($"- **Utilizator:** `{currentUser}`");
+                sb.AppendLine($"- **Ora:** `{GetTrueBucharestTime():HH:mm}`");
+
+                // Gaming quota summary
+                if (dailyGameTimeMinutes > 0)
+                {
+                    int allowedSec = dailyGameTimeMinutes * 60;
+                    int percent = (int)Math.Round((double)totalGamingSec / allowedSec * 100);
+                    bool isOver = totalGamingSec >= allowedSec;
+                    string quotaStatus = isOver ? "🔴 **Epuizat (Mod Școală Activat)**" : "🟢 **În Limită (Permis)**";
+                    sb.AppendLine($"- **Timp Gaming Utilizat:** `{gamingMin}m {gamingRemSec}s` / `{dailyGameTimeMinutes}m` ({percent}%)");
+                    sb.AppendLine($"- **Status Cota Gaming:** {quotaStatus}");
+                }
+                else
+                {
+                    sb.AppendLine($"- **Timp Gaming Înregistrat:** `{gamingMin}m {gamingRemSec}s` (Fără cotă zilnică definită)");
+                }
+                sb.AppendLine();
+
+                // Detailed breakdown of Games / Blocked Sites
+                sb.AppendLine("**🎮 Activitate Jocuri & Site-uri Blocate (Zilnic):**");
+                var sortedGameStats = currentDailyStats.GameSeconds.OrderByDescending(x => x.Value).ToList();
+                bool anyGame = false;
+                foreach (var stat in sortedGameStats)
+                {
+                    if (stat.Value >= 5)
+                    {
+                        anyGame = true;
+                        int m = stat.Value / 60;
+                        int s = stat.Value % 60;
+                        sb.AppendLine($"- **{stat.Key}**: {m}m {s}s ({stat.Value}s)");
+                    }
+                }
+                if (!anyGame)
+                {
+                    sb.AppendLine("- nici o activitate de gaming astăzi");
+                }
+                sb.AppendLine();
+
+                // Detailed breakdown of All Foreground Apps
+                sb.AppendLine("**💻 Timp Prim-plan pe Aplicații (Zilnic):**");
+                var sortedAppStats = currentDailyStats.AppSeconds.OrderByDescending(x => x.Value).ToList();
+                bool anyApp = false;
+                foreach (var stat in sortedAppStats)
+                {
+                    if (stat.Value >= 10)
+                    {
+                        anyApp = true;
+                        int m = stat.Value / 60;
+                        int s = stat.Value % 60;
+                        sb.AppendLine($"- **{stat.Key}**: {m}m {s}s ({stat.Value}s)");
+                    }
+                }
+                if (!anyApp)
+                {
+                    sb.AppendLine("- nici o aplicație înregistrată astăzi");
+                }
+                sb.AppendLine();
+
+                // Detailed breakdown of Audio
+                sb.AppendLine("**🔊 Timp Audio (Zilnic):**");
+                var sortedAudioStats = currentDailyStats.AudioSeconds.OrderByDescending(x => x.Value).ToList();
+                bool anyAudio = false;
+                foreach (var stat in sortedAudioStats)
+                {
+                    if (stat.Value >= 10)
+                    {
+                        anyAudio = true;
+                        int m = stat.Value / 60;
+                        int s = stat.Value % 60;
+                        sb.AppendLine($"- **{stat.Key}**: {m}m {s}s ({stat.Value}s)");
+                    }
+                }
+                if (!anyAudio)
+                {
+                    sb.AppendLine("- nici un sunet înregistrat astăzi");
+                }
+
+                await SendDiscordChunkedMessageAsync(sb.ToString());
+                Console.WriteLine("Discord daily stats report sent successfully.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to send daily report: {ex.Message}");
             }
         }
 

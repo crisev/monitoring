@@ -1,9 +1,12 @@
 {
   "version": "1.0.0",
   "downloadUrl": "https://github.com/crisev/monitoring/releases/download/v0.0.3/Monitor.exe",
+  "timeZone": "Europe/Bucharest",
   "scanIntervalSeconds": 5,
   "reportIntervalSeconds": 300,
   "screenshotIntervalSeconds": 300,
+  "dailyGameTimeMinutes": 60,
+  "dailyReportIntervalMinutes": 30,
   "intervals": [
     {
       "start": "08:00",
