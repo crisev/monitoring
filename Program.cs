@@ -1536,6 +1536,8 @@ namespace Monitor
                 using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
                 {
                     key.SetValue("Intervals", json);
+                    key.SetValue("DailyGameTimeMinutes", dailyGameTimeMinutes);
+                    key.SetValue("DailyReportIntervalMinutes", dailyReportIntervalMinutes);
                 }
             }
             catch (Exception ex)
@@ -1558,6 +1560,16 @@ namespace Monitor
                         {
                             configuredIntervals = intervals;
                         }
+                    }
+                    var gameTimeVal = key.GetValue("DailyGameTimeMinutes");
+                    if (gameTimeVal != null && int.TryParse(gameTimeVal.ToString(), out int savedGameTime))
+                    {
+                        dailyGameTimeMinutes = savedGameTime;
+                    }
+                    var reportVal = key.GetValue("DailyReportIntervalMinutes");
+                    if (reportVal != null && int.TryParse(reportVal.ToString(), out int savedReportInterval) && savedReportInterval > 0)
+                    {
+                        dailyReportIntervalMinutes = savedReportInterval;
                     }
                 }
             }
