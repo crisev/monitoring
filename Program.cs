@@ -298,9 +298,6 @@ namespace Monitor
             }
         }
 
-        private static Dictionary<string, int> appStats = new Dictionary<string, int>();
-        private static Dictionary<string, int> audioStats = new Dictionary<string, int>();
-
         private static readonly Stopwatch networkStopwatch = new Stopwatch();
         private static DateTime syncedUtcTime = DateTime.MinValue;
         private static bool isNetworkTimeSynced = false;
@@ -470,73 +467,64 @@ namespace Monitor
         private static readonly Stopwatch dailyReportStopwatch = Stopwatch.StartNew();
         private static DailyStatsData currentDailyStats = new DailyStatsData();
         private static bool gameQuotaExceededNotified = false;
+        private static bool gameTenMinutesWarningNotified = false;
+        private static bool intervalTenMinutesWarningNotified = false;
 
         private static Mutex singleInstanceMutex = new Mutex(true, "{8F6F0AC4-B9A1-45fd-A8CF-72F04E6BDE8F}");
 
         private static List<TimeInterval> configuredIntervals = new List<TimeInterval>();
-        private static OverlayForm overlayForm;
-        private static Thread overlayThread;
+        private static bool isGamingModeActive = false;
         private static bool wasInInterval = false;
         private static bool isDebugMode = false;
         private static bool noShutdown = false;
         private static bool forceUpdate = false;
 
-        private static void StartOverlayThread()
+        public static bool IsGamingModeActive => isGamingModeActive;
+
+        public static void ToggleGamingMode()
         {
-            overlayThread = new Thread(() =>
+            SetGamingMode(!isGamingModeActive);
+        }
+
+        public static void SetGamingMode(bool enable)
+        {
+            EnsureCurrentDayStats();
+            if (enable)
             {
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
-                overlayForm = new OverlayForm();
-                var handle = overlayForm.Handle; // Force handle creation
-                Application.Run();
-            });
-            overlayThread.SetApartmentState(ApartmentState.STA);
-            overlayThread.IsBackground = true;
-            overlayThread.Start();
+                int remainingSeconds = currentDailyStats.AvailableGamingSeconds - currentDailyStats.TotalGamingSeconds;
+                if (remainingSeconds <= 0 && currentDailyStats.AvailableGamingSeconds > 0)
+                {
+                    TrayService.Instance?.ShowNotification("Gaming Time Expired", "Today's gaming quota has already been spent.", ToolTipIcon.Warning);
+                    return;
+                }
+                if (remainingSeconds > 600)
+                {
+                    gameTenMinutesWarningNotified = false;
+                }
+                isGamingModeActive = true;
+                Console.WriteLine("Gaming Mode turned ON by user.");
+                TrayService.Instance?.ShowNotification("🎮 Gaming Mode ACTIVATED", $"Gaming session started. Remaining time: {remainingSeconds / 60} minute(s).", ToolTipIcon.Info);
+            }
+            else
+            {
+                isGamingModeActive = false;
+                Console.WriteLine("Gaming Mode turned OFF by user. Enforcing School mode.");
+                KillBlockedProcesses();
+                TrayService.Instance?.ShowNotification("🔵 School Mode ACTIVATED", "Gaming session stopped. Restricted applications are blocked.", ToolTipIcon.Info);
+            }
+
+            TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+        }
+
+        public static string GetIntervalDisplayText()
+        {
+            if (configuredIntervals == null || configuredIntervals.Count == 0) return "24/7 (No interval restrictions)";
+            var first = configuredIntervals.First();
+            return $"{first.Start:hh\\:mm} - {first.End:hh\\:mm}";
         }
 
         static async Task Main(string[] args)
         {
-            if (args.Contains("--test-overlay", StringComparer.OrdinalIgnoreCase))
-            {
-                StartOverlayThread();
-                while (overlayForm == null || !overlayForm.IsHandleCreated) Thread.Sleep(100);
-                overlayForm.UpdateCountdown(TimeSpan.FromMinutes(9).Add(TimeSpan.FromSeconds(59)));
-                MessageBox.Show("Overlay is currently visible. Click OK to close.", "Test Overlay", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            if (!singleInstanceMutex.WaitOne(TimeSpan.Zero, true))
-            {
-                // Another instance is already running. Exit silently.
-                return;
-            }
-
-            // Protect the process from being terminated by the current user (requires Admin to kill)
-            ProtectProcess();
-
-            // Enforce Windows Registry policies to disable Date & Time modification natively
-            ApplyWindowsTimeRegistryRestrictions();
-
-            // Clean up backup file if it exists from a previous update
-            try
-            {
-                string currentExe = Environment.ProcessPath;
-                if (!string.IsNullOrEmpty(currentExe))
-                {
-                    string backupExe = currentExe + ".bak";
-                    if (File.Exists(backupExe))
-                    {
-                        File.Delete(backupExe);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to clean up backup file: {ex.Message}");
-            }
-
             isDebugMode = args.Contains("--ignore-intervals", StringComparer.OrdinalIgnoreCase) || 
                           args.Contains("--debug", StringComparer.OrdinalIgnoreCase);
             noShutdown = args.Contains("--no-shutdown", StringComparer.OrdinalIgnoreCase);
@@ -569,10 +557,26 @@ namespace Monitor
                 }
             }
 
+            if (!singleInstanceMutex.WaitOne(TimeSpan.Zero, true))
+            {
+                Console.WriteLine("⚠️ Another instance of Monitor is already running in background (holding single instance lock).");
+                Console.WriteLine("Please close the existing instance or kill 'Monitor.exe' in Task Manager.");
+                return;
+            }
+
+            // Protect the process from being terminated by the current user (requires Admin to kill)
+            ProtectProcess();
+
+            // Enforce Windows Registry policies to disable Date & Time modification natively
+            ApplyWindowsTimeRegistryRestrictions();
+
             int loops = 0;
 
             LoadIntervalsFromRegistry();
             EnsureCurrentDayStats();
+
+            // Start Windows System Tray Service (Runs in background STA thread)
+            TrayService.Start();
 
             string localVer = GetLocalVersion();
             await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}`");
@@ -599,20 +603,25 @@ namespace Monitor
             TimeSpan currentTime = GetTrueBucharestTime().TimeOfDay;
             var activeInterval = GetActiveInterval(currentTime);
 
-            if (activeInterval == null && configuredIntervals.Count > 0)
+            if (activeInterval == null && configuredIntervals.Count > 0 && !isDebugMode)
             {
                 await InitiateContinuousShutdownAsync("No active time interval");
                 return;
             }
             
             wasInInterval = activeInterval != null || isDebugMode;
-            StartOverlayThread();
+
+            // Initial tray status update
+            TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
 
             while (true)
             {
                 try
                 {
                     EnsureCurrentDayStats();
+
+                    // Track total computer on time
+                    currentDailyStats.TotalComputerSeconds += scanIntervalSeconds;
 
                     TimeSpan now = GetTrueBucharestTime().TimeOfDay;
                     var currentActiveInterval = GetActiveInterval(now);
@@ -628,18 +637,15 @@ namespace Monitor
                         };
                     }
 
-                    bool isInInterval = currentActiveInterval != null;
+                    bool isInInterval = currentActiveInterval != null || isDebugMode;
 
                     if (wasInInterval && !isInInterval)
                     {
                         Console.WriteLine("Interval finished. Performing a final check of Gist to see if interval was extended...");
                         
-                        // Send final reports before checking exit
+                        // Send final report before checking exit
                         try
                         {
-                            await SendReportsAsync();
-                            appStats.Clear();
-                            audioStats.Clear();
                             await SendDailyReportAsync();
                         }
                         catch { }
@@ -651,7 +657,7 @@ namespace Monitor
                         // Re-evaluate the active interval with fresh data
                         now = GetTrueBucharestTime().TimeOfDay;
                         currentActiveInterval = GetActiveInterval(now);
-                        isInInterval = currentActiveInterval != null;
+                        isInInterval = currentActiveInterval != null || isDebugMode;
 
                         if (!isInInterval)
                         {
@@ -666,90 +672,75 @@ namespace Monitor
                     }
                     wasInInterval = isInInterval;
 
-                    if (isInInterval)
+                    // 1. Check for 10-minute Computer Interval Warning (before PC shutdown)
+                    if (currentActiveInterval != null && !isDebugMode)
                     {
                         TimeSpan end = currentActiveInterval.End;
-                        TimeSpan remaining;
+                        TimeSpan remainingInInterval;
                         if (end >= now)
                         {
-                            remaining = end - now;
+                            remainingInInterval = end - now;
                         }
                         else
                         {
-                            remaining = TimeSpan.FromHours(24) - now + end;
+                            remainingInInterval = TimeSpan.FromHours(24) - now + end;
                         }
 
-                        if (remaining.TotalMinutes <= 10)
+                        if (remainingInInterval.TotalMinutes <= 10 && remainingInInterval.TotalMinutes > 0 && !intervalTenMinutesWarningNotified)
                         {
-                            if (overlayForm != null && overlayForm.IsHandleCreated)
-                            {
-                                overlayForm.UpdateCountdown(remaining);
-                            }
+                            intervalTenMinutesWarningNotified = true;
+                            int remMinutes = (int)Math.Ceiling(remainingInInterval.TotalMinutes);
+                            TrayService.Instance?.ShowNotification("⏰ 10 Minutes until PC Shutdown", $"Allowed computer time ends in {remMinutes} minute(s). Please save your work.", ToolTipIcon.Warning);
+                            Console.WriteLine($"10-minute computer interval warning triggered ({remMinutes}m left).");
                         }
-                        else
+                        else if (remainingInInterval.TotalMinutes > 10)
                         {
-                            if (overlayForm != null && overlayForm.IsHandleCreated)
+                            intervalTenMinutesWarningNotified = false;
+                        }
+                    }
+
+                    // 2. Gaming Mode & Process Restriction Enforcement
+                    if (isGamingModeActive)
+                    {
+                        // Accumulate gaming time every scan interval while Gaming Mode is ON
+                        currentDailyStats.TotalGamingSeconds += scanIntervalSeconds;
+
+                        int remainingGamingSeconds = currentDailyStats.AvailableGamingSeconds - currentDailyStats.TotalGamingSeconds;
+
+                        // 10-minute Gaming Warning Notification
+                        if (currentDailyStats.AvailableGamingSeconds > 0 && remainingGamingSeconds <= 600 && remainingGamingSeconds > 0 && !gameTenMinutesWarningNotified)
+                        {
+                            gameTenMinutesWarningNotified = true;
+                            int remainingMinutes = (int)Math.Ceiling(remainingGamingSeconds / 60.0);
+                            TrayService.Instance?.ShowNotification("⏳ 10 Minutes of Gaming Left", $"You have {remainingMinutes} minute(s) of game time left before School Mode activates.", ToolTipIcon.Warning);
+                            Console.WriteLine($"10-minute gaming warning triggered ({remainingGamingSeconds}s remaining).");
+                        }
+
+                        // Check if total gaming time has reached the allowed quota (daily + carry-over)
+                        if (currentDailyStats.AvailableGamingSeconds > 0 && currentDailyStats.TotalGamingSeconds >= currentDailyStats.AvailableGamingSeconds)
+                        {
+                            isGamingModeActive = false;
+                            KillBlockedProcesses();
+
+                            TrayService.Instance?.ShowNotification("Gaming Time Expired", "Daily gaming quota reached. School Mode has been activated.", ToolTipIcon.Warning);
+
+                            if (!gameQuotaExceededNotified)
                             {
-                                overlayForm.HideOverlay();
+                                gameQuotaExceededNotified = true;
+                                Console.WriteLine($"Daily game quota reached ({currentDailyStats.TotalGamingSeconds / 60}m / {currentDailyStats.AvailableGamingSeconds / 60}m). Activating School mode restrictions.");
+                                await SendDiscordNotificationAsync($"⏳ **Gaming Time Expired**\n- **User:** `{currentUser}`\n- **Time Used:** `{currentDailyStats.TotalGamingSeconds / 60}m` / `{currentDailyStats.AvailableGamingSeconds / 60}m`\n- **Status:** School Mode activated (gaming apps/sites are blocked).");
                             }
                         }
                     }
                     else
                     {
-                        if (overlayForm != null && overlayForm.IsHandleCreated)
-                        {
-                            overlayForm.HideOverlay();
-                        }
-                    }
-
-                    bool isGamingInterval = currentActiveInterval != null && currentActiveInterval.Type.Equals("Gaming", StringComparison.OrdinalIgnoreCase);
-                    bool isSchoolInterval = currentActiveInterval != null && currentActiveInterval.Type.Equals("School", StringComparison.OrdinalIgnoreCase);
-
-                    // Determine whether gaming / blocked applications are allowed:
-                    // 1. In Gaming interval: games are always allowed (and game time continues to accumulate).
-                    // 2. In School interval: games are allowed only while dailyGameTime > 0 and counted gaming time is below dailyGameTime.
-                    // 3. When counted gaming time exceeds dailyGameTime, behaves like standard School mode (kills blocked processes).
-                    bool allowGames = false;
-                    if (isGamingInterval)
-                    {
-                        allowGames = true;
-                    }
-                    else if (isSchoolInterval)
-                    {
-                        if (dailyGameTimeMinutes > 0 && currentDailyStats.TotalGamingSeconds < dailyGameTimeMinutes * 60)
-                        {
-                            allowGames = true;
-                        }
-                        else
-                        {
-                            allowGames = false;
-                        }
-                    }
-                    else if (isDebugMode)
-                    {
-                        allowGames = true;
-                    }
-
-                    // 1. Process blocklist enforcement
-                    if (!allowGames)
-                    {
+                        // In School Mode (Gaming Mode is OFF): actively terminate prohibited processes
                         KillBlockedProcesses();
-                    }
-
-                    // Notify if daily quota has just been reached in School mode
-                    if (!gameQuotaExceededNotified && isSchoolInterval && dailyGameTimeMinutes > 0 && currentDailyStats.TotalGamingSeconds >= dailyGameTimeMinutes * 60)
-                    {
-                        gameQuotaExceededNotified = true;
-                        Console.WriteLine($"Daily game quota reached ({currentDailyStats.TotalGamingSeconds / 60}m / {dailyGameTimeMinutes}m). Activating School mode restrictions.");
-                        await SendDiscordNotificationAsync($"⏳ **Timp de Gaming Epuizat**\n- **Utilizator:** `{currentUser}`\n- **Timp Utilizat:** `{currentDailyStats.TotalGamingSeconds / 60}m` / `{dailyGameTimeMinutes}m`\n- **Status:** Modul Școală a fost activat (aplicațiile/site-urile de jocuri sunt blocate).");
                     }
 
                     var allProcesses = Process.GetProcesses();
 
-                    // Refresh processes list (since some might have been killed)
-                    allProcesses = Process.GetProcesses();
-
-                    // 3. Foreground Application Tracking
+                    // 2. Foreground Application Tracking
                     IntPtr fgHwnd = GetForegroundWindow();
                     if (fgHwnd != IntPtr.Zero)
                     {
@@ -770,20 +761,14 @@ namespace Monitor
                                 string[] ignoredApps = { "Idle", "LockApp", "SearchUI" };
                                 if (!ignoredApps.Contains(name, StringComparer.OrdinalIgnoreCase))
                                 {
-                                    // Periodic incremental stats
-                                    if (!appStats.ContainsKey(displayKey))
-                                        appStats[displayKey] = 0;
-                                    appStats[displayKey] += scanIntervalSeconds;
-
                                     // Daily app stats
                                     if (!currentDailyStats.AppSeconds.ContainsKey(displayKey))
                                         currentDailyStats.AppSeconds[displayKey] = 0;
                                     currentDailyStats.AppSeconds[displayKey] += scanIntervalSeconds;
 
-                                    // Check if this application/window is a game or blocked site
+                                    // Track breakdown for games / blocked sites
                                     if (IsGameOrBlockedActivity(name, windowTitle))
                                     {
-                                        currentDailyStats.TotalGamingSeconds += scanIntervalSeconds;
                                         if (!currentDailyStats.GameSeconds.ContainsKey(displayKey))
                                             currentDailyStats.GameSeconds[displayKey] = 0;
                                         currentDailyStats.GameSeconds[displayKey] += scanIntervalSeconds;
@@ -793,7 +778,7 @@ namespace Monitor
                         }
                     }
 
-                    // 4. Audio Playback Tracking
+                    // 3. Audio Playback Tracking
                     var audioPids = GetProcessesPlayingAudio();
                     foreach (var pid in audioPids)
                     {
@@ -826,11 +811,6 @@ namespace Monitor
                             string[] ignoredApps = { "Idle", "LockApp", "SearchUI" };
                             if (!ignoredApps.Contains(name, StringComparer.OrdinalIgnoreCase))
                             {
-                                // Periodic incremental audio stats
-                                if (!audioStats.ContainsKey(displayKey))
-                                    audioStats[displayKey] = 0;
-                                audioStats[displayKey] += scanIntervalSeconds;
-
                                 // Daily audio stats
                                 if (!currentDailyStats.AudioSeconds.ContainsKey(displayKey))
                                     currentDailyStats.AudioSeconds[displayKey] = 0;
@@ -842,14 +822,17 @@ namespace Monitor
                     // Persist daily stats to registry on each active scan
                     SaveDailyStatsToRegistry();
 
-                    // 5. Periodic Screenshot to Discord
+                    // Update System Tray UI & Tooltip
+                    TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+
+                    // 4. Periodic Screenshot to Discord
                     if (screenshotStopwatch.Elapsed.TotalSeconds >= screenshotIntervalSeconds)
                     {
                         screenshotStopwatch.Restart();
                         await CaptureAndSendScreenshotAsync();
                     }
 
-                    // 6. Periodic Daily Stats Report to Discord (e.g. every 30 minutes)
+                    // 5. Periodic Daily Stats Report to Discord (e.g. every 30 minutes)
                     if (dailyReportStopwatch.Elapsed.TotalMinutes >= dailyReportIntervalMinutes)
                     {
                         dailyReportStopwatch.Restart();
@@ -867,15 +850,8 @@ namespace Monitor
                 int currentLoopsNeeded = (int)Math.Ceiling((double)reportIntervalSeconds / scanIntervalSeconds);
                 if (loops >= currentLoopsNeeded)
                 {
-                    // Send Reports FIRST before RefreshBlockLists/Updates
-                    await SendReportsAsync();
-
-                    // Refresh block lists
+                    // Refresh block lists periodically from Gist
                     await RefreshBlockListsAsync();
-
-                    // Reset stats
-                    appStats.Clear();
-                    audioStats.Clear();
                     loops = 0;
                 }
             }
@@ -937,7 +913,7 @@ namespace Monitor
             return false;
         }
 
-        private static async Task<bool> RefreshBlockListsAsync()
+        public static async Task<bool> RefreshBlockListsAsync()
         {
             try
             {
@@ -1013,6 +989,11 @@ namespace Monitor
                         {
                             dailyGameTimeMinutes = gameTimeElement.GetInt32();
                             if (dailyGameTimeMinutes < 0) dailyGameTimeMinutes = 0;
+                            if (currentDailyStats != null && currentDailyStats.AvailableGamingSeconds <= 0 && dailyGameTimeMinutes > 0)
+                            {
+                                currentDailyStats.AvailableGamingSeconds = dailyGameTimeMinutes * 60;
+                                SaveDailyStatsToRegistry();
+                            }
                         }
                         if (root.TryGetProperty("dailyReportIntervalMinutes", out var dailyReportElement) && dailyReportElement.ValueKind == JsonValueKind.Number)
                         {
@@ -1061,113 +1042,6 @@ namespace Monitor
             {
                 Console.WriteLine($"Failed to fetch block lists from gist: {ex.Message}");
                 return false;
-            }
-        }
-
-        private static async Task SendReportsAsync()
-        {
-            try
-            {
-                var data = new List<object>();
-
-                // Build Discord message
-                StringBuilder message = new StringBuilder();
-                message.AppendLine("**Raport Activitate**");
-                message.AppendLine($"**Utilizator:** {currentUser}");
-                message.AppendLine($"**Ora:** {GetTrueBucharestTime():HH:mm}");
-                message.AppendLine();
-
-                // Foreground active stats
-                message.AppendLine("**Timp Prim-plan:**");
-                var sortedAppStats = appStats.OrderByDescending(x => x.Value).ToList();
-                bool fgFound = false;
-                foreach (var stat in sortedAppStats)
-                {
-                    if (stat.Value >= 6)
-                    {
-                        fgFound = true;
-                        message.AppendLine($"- **{stat.Key}**: {stat.Value} secunde");
-                    }
-                }
-                if (!fgFound)
-                {
-                    message.AppendLine("- nici o activitate detectată");
-                }
-
-                // Audio stats
-                message.AppendLine();
-                message.AppendLine("**Timp Audio (Fundal/Prim-plan):**");
-                var sortedAudioStats = audioStats.OrderByDescending(x => x.Value).ToList();
-                bool audioFound = false;
-                foreach (var stat in sortedAudioStats)
-                {
-                    if (stat.Value >= 6)
-                    {
-                        audioFound = true;
-                        message.AppendLine($"- **{stat.Key}**: {stat.Value} secunde");
-                    }
-                }
-                if (!audioFound)
-                {
-                    message.AppendLine("- nici un sunet detectat");
-                }
-
-                // Prepare Google Sheets Data (merged by app/display name)
-                var allKeys = appStats.Keys.Union(audioStats.Keys).ToList();
-                foreach (var key in allKeys)
-                {
-                    int fgSeconds = appStats.ContainsKey(key) ? appStats[key] : 0;
-                    int audSeconds = audioStats.ContainsKey(key) ? audioStats[key] : 0;
-
-                    if (fgSeconds >= 6 || audSeconds >= 6)
-                    {
-                        if (audSeconds >= 6)
-                        {
-                            data.Add(new { appName = key, seconds = fgSeconds, audioSeconds = audSeconds, user = currentUser });
-                        }
-                        else
-                        {
-                            data.Add(new { appName = key, seconds = fgSeconds, user = currentUser });
-                        }
-                    }
-                }
-
-                // Send Google Sheets report
-                if (data.Count > 0)
-                {
-                    try
-                    {
-                        string sheetPayload = JsonSerializer.Serialize(data);
-                        var content = new StringContent(sheetPayload, Encoding.UTF8, "application/json");
-                        await PostWithRedirectAsync(GoogleWebhookUrl, content);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Failed to send Google report: {ex.Message}");
-                    }
-                }
-
-                // Send Discord report
-                try
-                {
-                    var discordPayload = new { content = message.ToString() };
-                    string discordJson = JsonSerializer.Serialize(discordPayload);
-                    var discordContent = new StringContent(discordJson, Encoding.UTF8, "application/json");
-                    var response = await httpClient.PostAsync(TextWebhookUrl, discordContent);
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        string responseBody = await response.Content.ReadAsStringAsync();
-                        Console.WriteLine($"Discord text report failed: {response.StatusCode} - {responseBody}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Failed to send Discord text report: {ex.Message}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to send reports: {ex.Message}");
             }
         }
 
@@ -1587,16 +1461,43 @@ namespace Monitor
                 LoadDailyStatsFromRegistry();
                 if (currentDailyStats == null || currentDailyStats.Date != today)
                 {
-                    Console.WriteLine($"Starting fresh daily stats for date: {today}");
+                    int baseDailySeconds = dailyGameTimeMinutes * 60;
+                    int availableSeconds = baseDailySeconds;
+
+                    if (currentDailyStats != null && !string.IsNullOrEmpty(currentDailyStats.Date))
+                    {
+                        if (DateTime.TryParse(currentDailyStats.Date, out DateTime lastDate) &&
+                            DateTime.TryParse(today, out DateTime currentDate))
+                        {
+                            int daysDiff = (currentDate.Date - lastDate.Date).Days;
+                            if (daysDiff >= 1)
+                            {
+                                int prevAvailable = currentDailyStats.AvailableGamingSeconds > 0 
+                                    ? currentDailyStats.AvailableGamingSeconds 
+                                    : baseDailySeconds;
+                                int prevUnspent = Math.Max(0, prevAvailable - currentDailyStats.TotalGamingSeconds);
+                                int accumulated = prevUnspent + (daysDiff * baseDailySeconds);
+                                int maxCap = 5 * baseDailySeconds;
+                                availableSeconds = Math.Min(maxCap, accumulated);
+                                Console.WriteLine($"Rollover calculated: {daysDiff} day(s) passed. Prev unspent: {prevUnspent}s, New available: {availableSeconds}s (max cap: {maxCap}s)");
+                            }
+                        }
+                    }
+
+                    Console.WriteLine($"Starting fresh daily stats for date: {today} with available gaming time: {availableSeconds / 60}m");
                     currentDailyStats = new DailyStatsData
                     {
                         Date = today,
                         TotalGamingSeconds = 0,
+                        AvailableGamingSeconds = availableSeconds,
                         AppSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
                         AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
                         GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
                     };
                     gameQuotaExceededNotified = false;
+                    gameTenMinutesWarningNotified = false;
+                    intervalTenMinutesWarningNotified = false;
+                    isGamingModeActive = false; // Always start in School mode on new day/startup
                     SaveDailyStatsToRegistry();
                 }
             }
@@ -1642,8 +1543,10 @@ namespace Monitor
                                 currentDailyStats.AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                             if (currentDailyStats.GameSeconds == null)
                                 currentDailyStats.GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                            if (currentDailyStats.AvailableGamingSeconds <= 0 && dailyGameTimeMinutes > 0)
+                                currentDailyStats.AvailableGamingSeconds = dailyGameTimeMinutes * 60;
 
-                            Console.WriteLine($"Loaded existing daily stats for {today}: Gaming={currentDailyStats.TotalGamingSeconds}s");
+                            Console.WriteLine($"Loaded existing daily stats for {today}: Gaming={currentDailyStats.TotalGamingSeconds}s / {currentDailyStats.AvailableGamingSeconds}s");
                             return;
                         }
                     }
@@ -1711,20 +1614,35 @@ namespace Monitor
                 int gamingMin = totalGamingSec / 60;
                 int gamingRemSec = totalGamingSec % 60;
 
+                int availableSec = currentDailyStats.AvailableGamingSeconds;
+                int availableMin = availableSec / 60;
+
+                int remainingSec = Math.Max(0, availableSec - totalGamingSec);
+                int remainingMin = remainingSec / 60;
+                int remainingRemSec = remainingSec % 60;
+
+                int totalPcSec = currentDailyStats.TotalComputerSeconds;
+                int pcHours = totalPcSec / 3600;
+                int pcMinutes = (totalPcSec % 3600) / 60;
+                int pcRemainingSec = totalPcSec % 60;
+
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine("📊 **Raport Zilnic Activitate**");
                 sb.AppendLine($"- **Data:** `{currentDailyStats.Date}`");
                 sb.AppendLine($"- **Utilizator:** `{currentUser}`");
                 sb.AppendLine($"- **Ora:** `{GetTrueBucharestTime():HH:mm}`");
+                sb.AppendLine($"- **Interval Orar Permis:** `{GetIntervalDisplayText()}`");
+                sb.AppendLine($"- **Timp Total PC Pornit (Astăzi):** `{pcHours}h {pcMinutes}m {pcRemainingSec}s` ({totalPcSec / 60} minute)");
+                sb.AppendLine($"- **Mod Curent:** {(isGamingModeActive ? "🟢 **Mod Gaming ACTIV**" : "🔵 **Mod Școală ACTIV**")}");
 
                 // Gaming quota summary
-                if (dailyGameTimeMinutes > 0)
+                if (availableSec > 0)
                 {
-                    int allowedSec = dailyGameTimeMinutes * 60;
-                    int percent = (int)Math.Round((double)totalGamingSec / allowedSec * 100);
-                    bool isOver = totalGamingSec >= allowedSec;
-                    string quotaStatus = isOver ? "🔴 **Epuizat (Mod Școală Activat)**" : "🟢 **În Limită (Permis)**";
-                    sb.AppendLine($"- **Timp Gaming Utilizat:** `{gamingMin}m {gamingRemSec}s` / `{dailyGameTimeMinutes}m` ({percent}%)");
+                    int percent = (int)Math.Round((double)totalGamingSec / availableSec * 100);
+                    bool isOver = totalGamingSec >= availableSec;
+                    string quotaStatus = isOver ? "🔴 **Epuizat (Mod Școală Forțat)**" : $"🟢 **{remainingMin}m {remainingRemSec}s Rămase**";
+                    sb.AppendLine($"- **Timp Gaming Utilizat:** `{gamingMin}m {gamingRemSec}s` / `{availableMin}m` ({percent}%)");
+                    sb.AppendLine($"- **Bancă Disponibilă (cu report):** `{availableMin}m` (Bază zilnică: `{dailyGameTimeMinutes}m`, Limită max report: `{5 * dailyGameTimeMinutes}m`)");
                     sb.AppendLine($"- **Status Cota Gaming:** {quotaStatus}");
                 }
                 else
