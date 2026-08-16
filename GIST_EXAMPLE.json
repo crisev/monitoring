@@ -7,6 +7,10 @@
   "screenshotIntervalSeconds": 300,
   "dailyGameTimeMinutes": 60,
   "dailyReportIntervalMinutes": 30,
+  "bonusMinutes": {
+    "date": "2026-08-16",
+    "minutes": 30
+  },
   "intervals": [
     {
       "start": "08:00",

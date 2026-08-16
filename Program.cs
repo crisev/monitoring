@@ -987,13 +987,102 @@ namespace Monitor
                         }
                         if ((root.TryGetProperty("dailyGameTimeMinutes", out var gameTimeElement) || root.TryGetProperty("dailyGameTime", out gameTimeElement)) && gameTimeElement.ValueKind == JsonValueKind.Number)
                         {
-                            dailyGameTimeMinutes = gameTimeElement.GetInt32();
-                            if (dailyGameTimeMinutes < 0) dailyGameTimeMinutes = 0;
-                            if (currentDailyStats != null && currentDailyStats.AvailableGamingSeconds <= 0 && dailyGameTimeMinutes > 0)
+                            int newGameTime = gameTimeElement.GetInt32();
+                            if (newGameTime < 0) newGameTime = 0;
+
+                            if (newGameTime != dailyGameTimeMinutes)
+                            {
+                                int oldGameTime = dailyGameTimeMinutes;
+                                dailyGameTimeMinutes = newGameTime;
+                                SaveIntervalsToRegistry();
+
+                                if (currentDailyStats != null)
+                                {
+                                    if (currentDailyStats.AvailableGamingSeconds <= 0)
+                                    {
+                                        currentDailyStats.AvailableGamingSeconds = dailyGameTimeMinutes * 60;
+                                    }
+                                    else
+                                    {
+                                        int diffSeconds = (newGameTime - oldGameTime) * 60;
+                                        currentDailyStats.AvailableGamingSeconds = Math.Max(0, currentDailyStats.AvailableGamingSeconds + diffSeconds);
+                                    }
+
+                                    int remainingSeconds = currentDailyStats.AvailableGamingSeconds - currentDailyStats.TotalGamingSeconds;
+                                    if (remainingSeconds > 0)
+                                    {
+                                        gameQuotaExceededNotified = false;
+                                        if (remainingSeconds > 600)
+                                        {
+                                            gameTenMinutesWarningNotified = false;
+                                        }
+                                    }
+
+                                    SaveDailyStatsToRegistry();
+                                    TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+                                    Console.WriteLine($"[Config Update] dailyGameTimeMinutes updated from {oldGameTime}m to {newGameTime}m. New available quota: {currentDailyStats.AvailableGamingSeconds / 60}m (spent: {currentDailyStats.TotalGamingSeconds / 60}m, remaining: {Math.Max(0, remainingSeconds) / 60}m).");
+                                }
+                            }
+                            else if (currentDailyStats != null && currentDailyStats.AvailableGamingSeconds <= 0 && dailyGameTimeMinutes > 0)
                             {
                                 currentDailyStats.AvailableGamingSeconds = dailyGameTimeMinutes * 60;
                                 SaveDailyStatsToRegistry();
+                                TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
                             }
+                        }
+
+                        // Parse bonusMinutes / extraMinutes for today only
+                        // Supported formats:
+                        // "bonusMinutes": { "date": "2026-08-16", "minutes": 30 }
+                        // or "extraGameTimeMinutes": 30, "extraGameTimeDate": "2026-08-16"
+                        string todayDateStr = GetTrueBucharestTime().ToString("yyyy-MM-dd");
+                        int bonusMinutesFromGist = 0;
+
+                        if (root.TryGetProperty("bonusMinutes", out var bonusElement))
+                        {
+                            if (bonusElement.ValueKind == JsonValueKind.Object)
+                            {
+                                string bDate = bonusElement.TryGetProperty("date", out var dEl) ? dEl.GetString() : "";
+                                if (bDate == todayDateStr && bonusElement.TryGetProperty("minutes", out var mEl) && mEl.ValueKind == JsonValueKind.Number)
+                                {
+                                    bonusMinutesFromGist = Math.Max(0, mEl.GetInt32());
+                                }
+                            }
+                            else if (bonusElement.ValueKind == JsonValueKind.Number)
+                            {
+                                bonusMinutesFromGist = Math.Max(0, bonusElement.GetInt32());
+                            }
+                        }
+                        else if (root.TryGetProperty("extraGameTimeMinutes", out var extraEl) && extraEl.ValueKind == JsonValueKind.Number)
+                        {
+                            string extraDate = root.TryGetProperty("extraGameTimeDate", out var edEl) ? edEl.GetString() : todayDateStr;
+                            if (extraDate == todayDateStr)
+                            {
+                                bonusMinutesFromGist = Math.Max(0, extraEl.GetInt32());
+                            }
+                        }
+
+                        int targetBonusSeconds = bonusMinutesFromGist * 60;
+                        if (currentDailyStats != null && targetBonusSeconds != currentDailyStats.GrantedBonusSeconds)
+                        {
+                            int bonusDelta = targetBonusSeconds - currentDailyStats.GrantedBonusSeconds;
+                            currentDailyStats.AvailableGamingSeconds = Math.Max(0, currentDailyStats.AvailableGamingSeconds + bonusDelta);
+                            currentDailyStats.GrantedBonusSeconds = targetBonusSeconds;
+
+                            int remainingSeconds = currentDailyStats.AvailableGamingSeconds - currentDailyStats.TotalGamingSeconds;
+                            if (remainingSeconds > 0)
+                            {
+                                gameQuotaExceededNotified = false;
+                                if (remainingSeconds > 600)
+                                {
+                                    gameTenMinutesWarningNotified = false;
+                                }
+                            }
+
+                            SaveDailyStatsToRegistry();
+                            TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+                            TrayService.Instance?.ShowNotification("Bonus Game Time", $"Received {bonusMinutesFromGist} bonus minute(s) for today! Remaining: {Math.Max(0, remainingSeconds) / 60}m", ToolTipIcon.Info);
+                            Console.WriteLine($"[Config Update] Bonus minutes updated to {bonusMinutesFromGist}m for date {todayDateStr}. New available quota: {currentDailyStats.AvailableGamingSeconds / 60}m.");
                         }
                         if (root.TryGetProperty("dailyReportIntervalMinutes", out var dailyReportElement) && dailyReportElement.ValueKind == JsonValueKind.Number)
                         {
