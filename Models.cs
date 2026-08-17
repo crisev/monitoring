@@ -27,6 +27,7 @@ namespace Monitor
     {
         public string Date { get; set; } = "";
         public int TotalComputerSeconds { get; set; } = 0;
+        public int TotalScreenSeconds { get; set; } = 0;
         public int TotalGamingSeconds { get; set; } = 0;
         public int AvailableGamingSeconds { get; set; } = 0;
         public int GrantedBonusSeconds { get; set; } = 0;

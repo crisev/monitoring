@@ -167,6 +167,12 @@ namespace Monitor
         [DllImport("user32.dll")]
         static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool CloseDesktop(IntPtr hDesktop);
+
         private const int SM_CXSCREEN = 0;
         private const int SM_CYSCREEN = 1;
 
@@ -665,12 +671,16 @@ namespace Monitor
         private static int reportIntervalSeconds = 360;
         private static int screenshotIntervalSeconds = 60;
         private static int dailyGameTimeMinutes = 0;
+        private static int maxScreenTimeMinutes = 0;
         private static int dailyReportIntervalMinutes = 30;
         private static readonly Stopwatch dailyReportStopwatch = Stopwatch.StartNew();
         private static DailyStatsData currentDailyStats = new DailyStatsData();
         private static bool gameQuotaExceededNotified = false;
         private static bool gameTenMinutesWarningNotified = false;
         private static bool intervalTenMinutesWarningNotified = false;
+        private static bool screenTenMinutesWarningNotified = false;
+        private static bool screenFiveMinutesWarningNotified = false;
+        private static bool screenOneMinuteWarningNotified = false;
 
         private static Mutex singleInstanceMutex = new Mutex(true, "{8F6F0AC4-B9A1-45fd-A8CF-72F04E6BDE8F}");
 
@@ -682,6 +692,51 @@ namespace Monitor
         private static bool forceUpdate = false;
 
         public static bool IsGamingModeActive => isGamingModeActive;
+
+        private static bool IsSessionLocked()
+        {
+            try
+            {
+                // 1. Check if user input desktop is accessible
+                IntPtr hDesktop = OpenInputDesktop(0, false, 0x0001); // DESKTOP_READOBJECTS
+                if (hDesktop == IntPtr.Zero)
+                {
+                    // User desktop is not the active input desktop (locked, login screen, or UAC desktop)
+                    return true;
+                }
+                CloseDesktop(hDesktop);
+
+                // 2. Check foreground window process name
+                IntPtr fgHwnd = GetForegroundWindow();
+                if (fgHwnd == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                uint pid = 0;
+                GetWindowThreadProcessId(fgHwnd, out pid);
+                if (pid > 0)
+                {
+                    try
+                    {
+                        var proc = Process.GetProcessById((int)pid);
+                        string procName = proc.ProcessName;
+                        if (procName.Equals("LockApp", StringComparison.OrdinalIgnoreCase) ||
+                            procName.Equals("LogonUI", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                    catch { }
+                }
+
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         public static void ToggleGamingMode()
         {
@@ -715,7 +770,7 @@ namespace Monitor
                 TrayService.Instance?.ShowNotification("🔵 School Mode ACTIVATED", "Gaming session stopped. Restricted applications are blocked.", ToolTipIcon.Info);
             }
 
-            TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+            TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, currentDailyStats.TotalScreenSeconds, maxScreenTimeMinutes, isGamingModeActive, currentDailyStats);
         }
 
         public static string GetIntervalDisplayText()
@@ -837,7 +892,7 @@ namespace Monitor
             wasInInterval = activeInterval != null || isDebugMode;
 
             // Initial tray status update
-            TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+            TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, currentDailyStats.TotalScreenSeconds, maxScreenTimeMinutes, isGamingModeActive, currentDailyStats);
 
             while (true)
             {
@@ -847,6 +902,66 @@ namespace Monitor
 
                     // Track total computer on time
                     currentDailyStats.TotalComputerSeconds += scanIntervalSeconds;
+
+                    // Track screen time (only when not locked/on login screen)
+                    bool isSessionLocked = IsSessionLocked();
+                    if (!isSessionLocked)
+                    {
+                        currentDailyStats.TotalScreenSeconds += scanIntervalSeconds;
+                    }
+
+                    // Check for MaxScreenTimeMinutes limitation (10m, 5m, 1m warnings & shutdown)
+                    if (maxScreenTimeMinutes > 0 && !isDebugMode)
+                    {
+                        int maxScreenSec = maxScreenTimeMinutes * 60;
+                        int remainingScreenSec = maxScreenSec - currentDailyStats.TotalScreenSeconds;
+
+                        // 10-minute Screen Time Warning
+                        if (remainingScreenSec <= 600 && remainingScreenSec > 300 && !screenTenMinutesWarningNotified)
+                        {
+                            screenTenMinutesWarningNotified = true;
+                            int remMin = (int)Math.Ceiling(remainingScreenSec / 60.0);
+                            TrayService.Instance?.ShowNotification("⏰ 10 Minutes of Screen Time Left", $"You have {remMin} minute(s) of daily screen time left before computer shuts down.", ToolTipIcon.Warning);
+                            Console.WriteLine($"[Screen Time] 10-minute warning triggered ({remMin}m left).");
+                        }
+                        else if (remainingScreenSec > 600)
+                        {
+                            screenTenMinutesWarningNotified = false;
+                        }
+
+                        // 5-minute Screen Time Warning
+                        if (remainingScreenSec <= 300 && remainingScreenSec > 60 && !screenFiveMinutesWarningNotified)
+                        {
+                            screenFiveMinutesWarningNotified = true;
+                            int remMin = (int)Math.Ceiling(remainingScreenSec / 60.0);
+                            TrayService.Instance?.ShowNotification("⏰ 5 Minutes of Screen Time Left", $"Computer will shut down in {remMin} minute(s). Please save your work.", ToolTipIcon.Warning);
+                            Console.WriteLine($"[Screen Time] 5-minute warning triggered ({remMin}m left).");
+                        }
+                        else if (remainingScreenSec > 300)
+                        {
+                            screenFiveMinutesWarningNotified = false;
+                        }
+
+                        // 1-minute Screen Time Warning
+                        if (remainingScreenSec <= 60 && remainingScreenSec > 0 && !screenOneMinuteWarningNotified)
+                        {
+                            screenOneMinuteWarningNotified = true;
+                            TrayService.Instance?.ShowNotification("⚠️ 1 Minute until PC Shutdown", "Daily maximum screen time reached. Computer will shut down in 1 minute!", ToolTipIcon.Error);
+                            Console.WriteLine($"[Screen Time] 1-minute warning triggered ({remainingScreenSec}s left).");
+                        }
+                        else if (remainingScreenSec > 60)
+                        {
+                            screenOneMinuteWarningNotified = false;
+                        }
+
+                        // Enforce shutdown when screen time exceeded
+                        if (currentDailyStats.TotalScreenSeconds >= maxScreenSec)
+                        {
+                            Console.WriteLine($"Daily maximum screen time limit reached ({currentDailyStats.TotalScreenSeconds / 60}m / {maxScreenTimeMinutes}m). Initiating shutdown.");
+                            await InitiateContinuousShutdownAsync($"Daily maximum screen time limit reached ({maxScreenTimeMinutes}m)");
+                            return;
+                        }
+                    }
 
                     TimeSpan now = GetTrueBucharestTime().TimeOfDay;
                     var currentActiveInterval = GetActiveInterval(now);
@@ -1048,7 +1163,7 @@ namespace Monitor
                     SaveDailyStatsToRegistry();
 
                     // Update System Tray UI & Tooltip
-                    TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+                    TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, currentDailyStats.TotalScreenSeconds, maxScreenTimeMinutes, isGamingModeActive, currentDailyStats);
 
                     // 4. Periodic Screenshot to Discord
                     if (screenshotStopwatch.Elapsed.TotalSeconds >= screenshotIntervalSeconds)
@@ -1244,7 +1359,7 @@ namespace Monitor
                                     }
 
                                     SaveDailyStatsToRegistry();
-                                    TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+                                    TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, currentDailyStats.TotalScreenSeconds, maxScreenTimeMinutes, isGamingModeActive, currentDailyStats);
                                     Console.WriteLine($"[Config Update] dailyGameTimeMinutes updated from {oldGameTime}m to {newGameTime}m. New available quota: {currentDailyStats.AvailableGamingSeconds / 60}m (spent: {currentDailyStats.TotalGamingSeconds / 60}m, remaining: {Math.Max(0, remainingSeconds) / 60}m).");
                                 }
                             }
@@ -1252,7 +1367,21 @@ namespace Monitor
                             {
                                 currentDailyStats.AvailableGamingSeconds = dailyGameTimeMinutes * 60;
                                 SaveDailyStatsToRegistry();
-                                TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+                                TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, currentDailyStats.TotalScreenSeconds, maxScreenTimeMinutes, isGamingModeActive, currentDailyStats);
+                            }
+                        }
+
+                        if ((root.TryGetProperty("maxScreenTimeMinutes", out var maxScreenElement) || root.TryGetProperty("maxScreenTime", out maxScreenElement)) && maxScreenElement.ValueKind == JsonValueKind.Number)
+                        {
+                            int newScreenTime = maxScreenElement.GetInt32();
+                            if (newScreenTime < 0) newScreenTime = 0;
+                            if (newScreenTime != maxScreenTimeMinutes)
+                            {
+                                int oldScreenTime = maxScreenTimeMinutes;
+                                maxScreenTimeMinutes = newScreenTime;
+                                SaveIntervalsToRegistry();
+                                TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, currentDailyStats.TotalScreenSeconds, maxScreenTimeMinutes, isGamingModeActive, currentDailyStats);
+                                Console.WriteLine($"[Config Update] maxScreenTimeMinutes updated from {oldScreenTime}m to {newScreenTime}m.");
                             }
                         }
 
@@ -1305,7 +1434,7 @@ namespace Monitor
                             }
 
                             SaveDailyStatsToRegistry();
-                            TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, isGamingModeActive, currentDailyStats);
+                            TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, currentDailyStats.TotalScreenSeconds, maxScreenTimeMinutes, isGamingModeActive, currentDailyStats);
                             TrayService.Instance?.ShowNotification("Bonus Game Time", $"Received {bonusMinutesFromGist} bonus minute(s) for today! Remaining: {Math.Max(0, remainingSeconds) / 60}m", ToolTipIcon.Info);
                             Console.WriteLine($"[Config Update] Bonus minutes updated to {bonusMinutesFromGist}m for date {todayDateStr}. New available quota: {currentDailyStats.AvailableGamingSeconds / 60}m.");
                         }
@@ -1725,6 +1854,7 @@ namespace Monitor
                 {
                     key.SetValue("Intervals", json);
                     key.SetValue("DailyGameTimeMinutes", dailyGameTimeMinutes);
+                    key.SetValue("MaxScreenTimeMinutes", maxScreenTimeMinutes);
                     key.SetValue("DailyReportIntervalMinutes", dailyReportIntervalMinutes);
                 }
             }
@@ -1754,6 +1884,11 @@ namespace Monitor
                     {
                         dailyGameTimeMinutes = savedGameTime;
                     }
+                    var screenTimeVal = key.GetValue("MaxScreenTimeMinutes");
+                    if (screenTimeVal != null && int.TryParse(screenTimeVal.ToString(), out int savedScreenTime) && savedScreenTime >= 0)
+                    {
+                        maxScreenTimeMinutes = savedScreenTime;
+                    }
                     var reportVal = key.GetValue("DailyReportIntervalMinutes");
                     if (reportVal != null && int.TryParse(reportVal.ToString(), out int savedReportInterval) && savedReportInterval > 0)
                     {
@@ -1782,7 +1917,7 @@ namespace Monitor
             if (existingToday != null)
             {
                 currentDailyStats = existingToday;
-                Console.WriteLine($"Loaded existing daily stats for {today}: Gaming={currentDailyStats.TotalGamingSeconds}s / {currentDailyStats.AvailableGamingSeconds}s");
+                Console.WriteLine($"Loaded existing daily stats for {today}: Gaming={currentDailyStats.TotalGamingSeconds}s / {currentDailyStats.AvailableGamingSeconds}s, Screen={currentDailyStats.TotalScreenSeconds}s");
                 return;
             }
 
@@ -1821,6 +1956,7 @@ namespace Monitor
                 Date = today,
                 TotalGamingSeconds = 0,
                 TotalComputerSeconds = 0,
+                TotalScreenSeconds = 0,
                 AvailableGamingSeconds = availableSeconds,
                 GrantedBonusSeconds = 0,
                 AppSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
@@ -1830,6 +1966,9 @@ namespace Monitor
             gameQuotaExceededNotified = false;
             gameTenMinutesWarningNotified = false;
             intervalTenMinutesWarningNotified = false;
+            screenTenMinutesWarningNotified = false;
+            screenFiveMinutesWarningNotified = false;
+            screenOneMinuteWarningNotified = false;
             isGamingModeActive = false; // Always start in School mode on new day/startup
             SaveDailyStatsToRegistry();
         }
@@ -2062,6 +2201,11 @@ namespace Monitor
                 int pcMinutes = (totalPcSec % 3600) / 60;
                 int pcRemainingSec = totalPcSec % 60;
 
+                int totalScreenSec = currentDailyStats.TotalScreenSeconds;
+                int screenHours = totalScreenSec / 3600;
+                int screenMinutes = (totalScreenSec % 3600) / 60;
+                int screenRemainingSec = totalScreenSec % 60;
+
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine("📊 **Daily Activity Report**");
                 sb.AppendLine($"- **Date:** `{currentDailyStats.Date}`");
@@ -2069,6 +2213,19 @@ namespace Monitor
                 sb.AppendLine($"- **Time:** `{GetTrueBucharestTime():HH:mm}`");
                 sb.AppendLine($"- **Allowed Time Window:** `{GetIntervalDisplayText()}`");
                 sb.AppendLine($"- **Total PC On Time (Today):** `{pcHours}h {pcMinutes}m {pcRemainingSec}s` ({totalPcSec / 60} minutes)");
+                if (maxScreenTimeMinutes > 0)
+                {
+                    int maxScreenSec = maxScreenTimeMinutes * 60;
+                    int remScreenSec = Math.Max(0, maxScreenSec - totalScreenSec);
+                    int remScreenMin = remScreenSec / 60;
+                    int remScreenRemSec = remScreenSec % 60;
+                    int screenPercent = (int)Math.Round((double)totalScreenSec / maxScreenSec * 100);
+                    sb.AppendLine($"- **Active Screen Time (Today):** `{screenHours}h {screenMinutes}m {screenRemainingSec}s` / `{maxScreenTimeMinutes}m` ({screenPercent}%) - `{remScreenMin}m {remScreenRemSec}s` remaining");
+                }
+                else
+                {
+                    sb.AppendLine($"- **Active Screen Time (Today):** `{screenHours}h {screenMinutes}m {screenRemainingSec}s` ({totalScreenSec / 60} minutes)");
+                }
                 sb.AppendLine($"- **Current Mode:** {(isGamingModeActive ? "🟢 **Gaming Mode ACTIVE**" : "🔵 **School Mode ACTIVE**")}");
 
                 // Gaming quota summary

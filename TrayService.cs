@@ -29,6 +29,8 @@ namespace Monitor
         // Current state cache
         private string currentIntervalText = "Loading...";
         private int currentComputerSeconds = 0;
+        private int currentScreenSeconds = 0;
+        private int currentMaxScreenMinutes = 0;
         private int currentSpentSeconds = 0;
         private int currentAvailableSeconds = 0;
         private bool currentIsGamingMode = false;
@@ -172,7 +174,7 @@ namespace Monitor
             catch { }
         }
 
-        public void UpdateStatus(string intervalText, int spentGamingSeconds, int availableGamingSeconds, int totalComputerSeconds, bool isGamingMode, DailyStatsData stats = null)
+        public void UpdateStatus(string intervalText, int spentGamingSeconds, int availableGamingSeconds, int totalComputerSeconds, int totalScreenSeconds, int maxScreenMinutes, bool isGamingMode, DailyStatsData stats = null)
         {
             if (invokerControl == null || !invokerControl.IsHandleCreated) return;
 
@@ -184,6 +186,8 @@ namespace Monitor
                     currentSpentSeconds = spentGamingSeconds;
                     currentAvailableSeconds = availableGamingSeconds;
                     currentComputerSeconds = totalComputerSeconds;
+                    currentScreenSeconds = totalScreenSeconds;
+                    currentMaxScreenMinutes = maxScreenMinutes;
                     currentIsGamingMode = isGamingMode;
                     if (stats != null) cachedStats = stats;
 
@@ -192,12 +196,23 @@ namespace Monitor
                     int availableMinutes = availableGamingSeconds / 60;
                     int remainingMinutes = remainingSeconds / 60;
 
+                    int screenHours = totalScreenSeconds / 3600;
+                    int screenMinutes = (totalScreenSeconds % 3600) / 60;
+                    string screenTimeStr = screenHours > 0 ? $"{screenHours}h {screenMinutes}m" : $"{screenMinutes}m";
+
                     int pcHours = totalComputerSeconds / 3600;
                     int pcMinutes = (totalComputerSeconds % 3600) / 60;
                     string pcTimeStr = pcHours > 0 ? $"{pcHours}h {pcMinutes}m" : $"{pcMinutes}m";
 
-                    // Update Total Computer Time display
-                    computerTimeMenuItem.Text = $"💻 PC Time Today: {pcTimeStr}";
+                    // Update Screen Time / PC Time display
+                    if (maxScreenMinutes > 0)
+                    {
+                        computerTimeMenuItem.Text = $"🖥️ Screen Time: {screenTimeStr} / {maxScreenMinutes}m";
+                    }
+                    else
+                    {
+                        computerTimeMenuItem.Text = $"🖥️ Screen Time: {screenTimeStr} (PC On: {pcTimeStr})";
+                    }
 
                     // Update Interval display
                     intervalMenuItem.Text = $"⏰ Computer Time: {intervalText}";
@@ -367,7 +382,7 @@ namespace Monitor
                 statsForm = new Form
                 {
                     Text = "Activity Monitor Status",
-                    Size = new Size(500, 320),
+                    Size = new Size(520, 360),
                     StartPosition = FormStartPosition.CenterScreen,
                     FormBorderStyle = FormBorderStyle.FixedDialog,
                     MaximizeBox = false,
@@ -395,6 +410,11 @@ namespace Monitor
             int remainingSeconds = Math.Max(0, currentAvailableSeconds - currentSpentSeconds);
             int remainingMinutes = remainingSeconds / 60;
             int remainingSec = remainingSeconds % 60;
+
+            int screenHours = currentScreenSeconds / 3600;
+            int screenMinutes = (currentScreenSeconds % 3600) / 60;
+            int screenSec = currentScreenSeconds % 60;
+            string screenTimeFormatted = screenHours > 0 ? $"{screenHours}h {screenMinutes}m {screenSec}s" : $"{screenMinutes}m {screenSec}s";
 
             int pcHours = currentComputerSeconds / 3600;
             int pcMinutes = (currentComputerSeconds % 3600) / 60;
@@ -457,22 +477,47 @@ namespace Monitor
                 BackColor = Color.White
             };
 
+            Label screenTimeLabel;
+            if (currentMaxScreenMinutes > 0)
+            {
+                int remScreenSec = Math.Max(0, currentMaxScreenMinutes * 60 - currentScreenSeconds);
+                screenTimeLabel = new Label
+                {
+                    Text = $"🖥️ Active Screen Time:       {screenTimeFormatted} / {currentMaxScreenMinutes}m ({remScreenSec / 60}m left)",
+                    Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+                    ForeColor = Color.DarkSlateGray,
+                    AutoSize = true,
+                    Location = new Point(20, 12)
+                };
+            }
+            else
+            {
+                screenTimeLabel = new Label
+                {
+                    Text = $"🖥️ Active Screen Time:       {screenTimeFormatted}",
+                    Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+                    ForeColor = Color.DarkSlateGray,
+                    AutoSize = true,
+                    Location = new Point(20, 12)
+                };
+            }
+
             Label pcTimeLabel = new Label
             {
-                Text = $"💻 Total PC On Time Today:    {pcTimeFormatted}",
-                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-                ForeColor = Color.DarkSlateGray,
+                Text = $"💻 Total PC On Time:         {pcTimeFormatted}",
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Regular),
+                ForeColor = Color.DimGray,
                 AutoSize = true,
-                Location = new Point(20, 12)
+                Location = new Point(20, 36)
             };
 
             Label intervalLabel = new Label
             {
                 Text = $"⏰ Allowed Computer Hours:   {currentIntervalText}",
-                Font = new Font("Segoe UI", 10f, FontStyle.Regular),
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Regular),
                 ForeColor = Color.DimGray,
                 AutoSize = true,
-                Location = new Point(20, 36)
+                Location = new Point(20, 58)
             };
 
             Label quotaHeaderLabel = new Label
@@ -481,7 +526,7 @@ namespace Monitor
                 Font = new Font("Segoe UI", 10f, FontStyle.Bold),
                 ForeColor = Color.DarkSlateBlue,
                 AutoSize = true,
-                Location = new Point(20, 64)
+                Location = new Point(20, 84)
             };
 
             Label quotaDetailsLabel = new Label
@@ -490,9 +535,10 @@ namespace Monitor
                 Font = new Font("Consolas", 10f, FontStyle.Regular),
                 ForeColor = remainingSeconds > 0 ? Color.FromArgb(40, 40, 40) : Color.Crimson,
                 AutoSize = true,
-                Location = new Point(36, 90)
+                Location = new Point(36, 110)
             };
 
+            centerPanel.Controls.Add(screenTimeLabel);
             centerPanel.Controls.Add(pcTimeLabel);
             centerPanel.Controls.Add(intervalLabel);
             centerPanel.Controls.Add(quotaHeaderLabel);
