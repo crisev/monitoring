@@ -54,7 +54,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -299,11 +301,30 @@ namespace Monitor
         }
 
         private static readonly Stopwatch networkStopwatch = new Stopwatch();
+        private static readonly Stopwatch offlineSessionStopwatch = Stopwatch.StartNew();
         private static DateTime syncedUtcTime = DateTime.MinValue;
         private static bool isNetworkTimeSynced = false;
         private static readonly object timeSyncLock = new object();
         private static TimeZoneInfo bucharestTimeZoneInfo = GetBucharestTimeZoneInfo();
         private static readonly Stopwatch screenshotStopwatch = Stopwatch.StartNew();
+
+        private static readonly string[] ntpServers = new string[]
+        {
+            "time.google.com",
+            "pool.ntp.org",
+            "time.windows.com",
+            "time.cloudflare.com"
+        };
+
+        private static readonly string[] httpTimeUrls = new string[]
+        {
+            "https://www.google.com",
+            "https://www.cloudflare.com",
+            "https://api.github.com",
+            "https://www.microsoft.com"
+        };
+
+        public static bool IsNetworkTimeSynced => isNetworkTimeSynced;
 
         private static TimeZoneInfo GetBucharestTimeZoneInfo()
         {
@@ -324,17 +345,183 @@ namespace Monitor
             }
         }
 
+        private static async Task<DateTime?> QueryNtpServerAsync(string ntpServer, int timeoutMs = 2500)
+        {
+            try
+            {
+                using (var udpClient = new UdpClient())
+                {
+                    udpClient.Client.ReceiveTimeout = timeoutMs;
+                    udpClient.Client.SendTimeout = timeoutMs;
+
+                    var ntpData = new byte[48];
+                    ntpData[0] = 0x1B; // LI = 0, VN = 3, Mode = 3 (Client)
+
+                    var addresses = await Dns.GetHostAddressesAsync(ntpServer);
+                    var ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork) ?? addresses.FirstOrDefault();
+                    if (ip == null) return null;
+
+                    var ipEndPoint = new IPEndPoint(ip, 123);
+                    await udpClient.SendAsync(ntpData, ntpData.Length, ipEndPoint);
+
+                    var receiveTask = udpClient.ReceiveAsync();
+                    if (await Task.WhenAny(receiveTask, Task.Delay(timeoutMs)) == receiveTask)
+                    {
+                        var result = receiveTask.Result;
+                        if (result.Buffer != null && result.Buffer.Length >= 48)
+                        {
+                            ulong intPart = (ulong)result.Buffer[40] << 24 | (ulong)result.Buffer[41] << 16 | (ulong)result.Buffer[42] << 8 | (ulong)result.Buffer[43];
+                            ulong fractPart = (ulong)result.Buffer[44] << 24 | (ulong)result.Buffer[45] << 16 | (ulong)result.Buffer[46] << 8 | (ulong)result.Buffer[47];
+
+                            var milliseconds = (intPart * 1000) + ((fractPart * 1000) / 0x100000000L);
+                            var networkDateTime = (new DateTime(1900, 1, 1, 0, 0, 0, DateTimeKind.Utc)).AddMilliseconds((long)milliseconds);
+
+                            if (networkDateTime.Year >= 2024 && networkDateTime.Year <= 2035)
+                            {
+                                return networkDateTime;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static async Task<DateTime?> QueryHttpDateAsync(string url, int timeoutMs = 2500)
+        {
+            try
+            {
+                using (var cts = new CancellationTokenSource(timeoutMs))
+                using (var request = new HttpRequestMessage(HttpMethod.Head, url))
+                {
+                    request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true, NoStore = true };
+                    var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                    if (response.Headers.Date.HasValue)
+                    {
+                        var dt = response.Headers.Date.Value.UtcDateTime;
+                        if (dt.Year >= 2024 && dt.Year <= 2035)
+                        {
+                            return dt;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        public static async Task<bool> SyncNetworkTimeAsync()
+        {
+            // 1. Try NTP servers first
+            foreach (var ntpServer in ntpServers)
+            {
+                var ntpTime = await QueryNtpServerAsync(ntpServer);
+                if (ntpTime.HasValue)
+                {
+                    ApplyNetworkTimeSync(ntpTime.Value, $"NTP ({ntpServer})");
+                    return true;
+                }
+            }
+
+            // 2. Fallback to HTTP HEAD Date header
+            foreach (var url in httpTimeUrls)
+            {
+                var httpTime = await QueryHttpDateAsync(url);
+                if (httpTime.HasValue)
+                {
+                    ApplyNetworkTimeSync(httpTime.Value, $"HTTP ({url})");
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void ApplyNetworkTimeSync(DateTime utcTime, string source)
+        {
+            lock (timeSyncLock)
+            {
+                syncedUtcTime = utcTime;
+                networkStopwatch.Restart();
+                isNetworkTimeSynced = true;
+            }
+
+            SaveVerifiedTimeWatermark(utcTime);
+            Console.WriteLine($"[Time Sync] Successfully synchronized true UTC time from {source}: {utcTime:yyyy-MM-dd HH:mm:ss} UTC (Bucharest: {GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss})");
+        }
+
+        private static void SaveVerifiedTimeWatermark(DateTime utcTime)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    key.SetValue("LastVerifiedUtcTime", utcTime.ToString("o"));
+                    var maxVal = key.GetValue("MaxRecordedUtcTime");
+                    if (maxVal == null || !DateTime.TryParse(maxVal.ToString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime maxDt) || utcTime > maxDt)
+                    {
+                        key.SetValue("MaxRecordedUtcTime", utcTime.ToString("o"));
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static DateTime GetLastVerifiedUtcWatermark()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\MonitorApp"))
+                {
+                    if (key != null)
+                    {
+                        var val = key.GetValue("LastVerifiedUtcTime");
+                        if (val != null && DateTime.TryParse(val.ToString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime dt))
+                        {
+                            return dt;
+                        }
+                        var maxVal = key.GetValue("MaxRecordedUtcTime");
+                        if (maxVal != null && DateTime.TryParse(maxVal.ToString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime maxDt))
+                        {
+                            return maxDt;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return DateTime.MinValue;
+        }
+
+        private static async Task RunPeriodicNetworkTimeSyncLoopAsync()
+        {
+            while (true)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(5));
+                    await SyncNetworkTimeAsync();
+                }
+                catch { }
+            }
+        }
+
         private static void SyncNetworkTimeFromResponse(HttpResponseMessage response)
         {
             try
             {
                 if (response != null && response.Headers != null && response.Headers.Date.HasValue)
                 {
-                    lock (timeSyncLock)
+                    var dt = response.Headers.Date.Value.UtcDateTime;
+                    if (dt.Year >= 2024 && dt.Year <= 2035)
                     {
-                        syncedUtcTime = response.Headers.Date.Value.UtcDateTime;
-                        networkStopwatch.Restart();
-                        isNetworkTimeSynced = true;
+                        lock (timeSyncLock)
+                        {
+                            syncedUtcTime = dt;
+                            networkStopwatch.Restart();
+                            isNetworkTimeSynced = true;
+                        }
+                        SaveVerifiedTimeWatermark(dt);
                     }
                 }
             }
@@ -350,7 +537,22 @@ namespace Monitor
                     return syncedUtcTime.Add(networkStopwatch.Elapsed);
                 }
             }
-            return DateTime.UtcNow;
+
+            // Fallback when network is not yet verified (e.g. offline boot)
+            DateTime watermark = GetLastVerifiedUtcWatermark();
+            DateTime localUtc = DateTime.UtcNow;
+
+            // Anti-tamper check: If local BIOS clock was set backwards before our last verified time,
+            // reject the local clock and advance monotonically from the last verified watermark.
+            if (watermark > DateTime.MinValue)
+            {
+                if (localUtc < watermark)
+                {
+                    return watermark.Add(offlineSessionStopwatch.Elapsed);
+                }
+            }
+
+            return localUtc;
         }
 
         private static DateTime GetTrueBucharestTime()
@@ -573,13 +775,36 @@ namespace Monitor
             int loops = 0;
 
             LoadIntervalsFromRegistry();
+
+            // Actively synchronize network time from authoritative sources (NTP / HTTP) before initializing daily stats
+            Console.WriteLine("Synchronizing network time from authoritative sources (NTP / HTTP)...");
+            bool initialTimeSynced = false;
+            for (int attempt = 1; attempt <= 6; attempt++)
+            {
+                initialTimeSynced = await SyncNetworkTimeAsync();
+                if (initialTimeSynced)
+                {
+                    break;
+                }
+                Console.WriteLine($"Network time sync attempt {attempt} failed (network initializing). Retrying in 2s...");
+                await Task.Delay(2000);
+            }
+
+            if (!initialTimeSynced)
+            {
+                Console.WriteLine("⚠️ Warning: Initial network time sync failed. Using monotonic time anchored to last verified timestamp.");
+            }
+
+            // Start background periodic network time sync loop (every 5 minutes)
+            _ = Task.Run(RunPeriodicNetworkTimeSyncLoopAsync);
+
             EnsureCurrentDayStats();
 
             // Start Windows System Tray Service (Runs in background STA thread)
             TrayService.Start();
 
             string localVer = GetLocalVersion();
-            await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}`");
+            await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}` (Bucharest)");
 
             // Always try to fetch the latest configuration and intervals from the Gist first (retrying on startup in case network is initializing)
             bool gistFetched = false;
@@ -1235,7 +1460,7 @@ namespace Monitor
                 {
                     var payload = new 
                     { 
-                        content = $"**Monitorizare Ecran**\n**Utilizator:** {currentUser}\n**Ora:** {GetTrueBucharestTime():HH:mm:ss}" 
+                        content = $"**Screen Monitoring**\n- **User:** `{currentUser}`\n- **Time:** `{GetTrueBucharestTime():HH:mm:ss}`" 
                     };
                     string jsonPayload = JsonSerializer.Serialize(payload);
                     content.Add(new StringContent(jsonPayload, Encoding.UTF8, "application/json"), "payload_json");
@@ -1545,63 +1770,90 @@ namespace Monitor
         private static void EnsureCurrentDayStats()
         {
             string today = GetTrueBucharestTime().ToString("yyyy-MM-dd");
-            if (currentDailyStats == null || currentDailyStats.Date != today)
+
+            // If already loaded for today, nothing to do
+            if (currentDailyStats != null && currentDailyStats.Date == today)
             {
-                LoadDailyStatsFromRegistry();
-                if (currentDailyStats == null || currentDailyStats.Date != today)
+                return;
+            }
+
+            // 1. Try to load existing record for today from registry
+            var existingToday = LoadDailyStatsForDate(today);
+            if (existingToday != null)
+            {
+                currentDailyStats = existingToday;
+                Console.WriteLine($"Loaded existing daily stats for {today}: Gaming={currentDailyStats.TotalGamingSeconds}s / {currentDailyStats.AvailableGamingSeconds}s");
+                return;
+            }
+
+            // 2. If no record for today exists yet:
+            // Calculate rollover from the most recent prior day
+            int baseDailySeconds = dailyGameTimeMinutes * 60;
+            int availableSeconds = baseDailySeconds;
+
+            var lastStats = GetMostRecentPastDailyStats(today);
+            if (lastStats != null && !string.IsNullOrEmpty(lastStats.Date))
+            {
+                if (DateTime.TryParse(lastStats.Date, out DateTime lastDate) &&
+                    DateTime.TryParse(today, out DateTime currentDate))
                 {
-                    int baseDailySeconds = dailyGameTimeMinutes * 60;
-                    int availableSeconds = baseDailySeconds;
-
-                    if (currentDailyStats != null && !string.IsNullOrEmpty(currentDailyStats.Date))
+                    int daysDiff = (currentDate.Date - lastDate.Date).Days;
+                    if (daysDiff >= 1)
                     {
-                        if (DateTime.TryParse(currentDailyStats.Date, out DateTime lastDate) &&
-                            DateTime.TryParse(today, out DateTime currentDate))
-                        {
-                            int daysDiff = (currentDate.Date - lastDate.Date).Days;
-                            if (daysDiff >= 1)
-                            {
-                                int prevAvailable = currentDailyStats.AvailableGamingSeconds > 0 
-                                    ? currentDailyStats.AvailableGamingSeconds 
-                                    : baseDailySeconds;
-                                int prevUnspent = Math.Max(0, prevAvailable - currentDailyStats.TotalGamingSeconds);
-                                int accumulated = prevUnspent + (daysDiff * baseDailySeconds);
-                                int maxCap = 5 * baseDailySeconds;
-                                availableSeconds = Math.Min(maxCap, accumulated);
-                                Console.WriteLine($"Rollover calculated: {daysDiff} day(s) passed. Prev unspent: {prevUnspent}s, New available: {availableSeconds}s (max cap: {maxCap}s)");
-                            }
-                        }
+                        int prevAvailable = lastStats.AvailableGamingSeconds > 0 
+                            ? lastStats.AvailableGamingSeconds 
+                            : baseDailySeconds;
+                        int prevUnspent = Math.Max(0, prevAvailable - lastStats.TotalGamingSeconds);
+                        
+                        // Carryover = unspent from last active day + today's base daily quota
+                        // Capped at maximum 5x daily base
+                        int accumulated = prevUnspent + baseDailySeconds;
+                        int maxCap = 5 * baseDailySeconds;
+                        availableSeconds = Math.Min(maxCap, accumulated);
+                        Console.WriteLine($"Rollover calculated from {lastStats.Date}: {daysDiff} day(s) passed. Prev unspent: {prevUnspent}s ({prevUnspent/60}m), Today's base: {baseDailySeconds/60}m, New available: {availableSeconds}s ({availableSeconds/60}m, max cap: {maxCap/60}m)");
                     }
-
-                    Console.WriteLine($"Starting fresh daily stats for date: {today} with available gaming time: {availableSeconds / 60}m");
-                    currentDailyStats = new DailyStatsData
-                    {
-                        Date = today,
-                        TotalGamingSeconds = 0,
-                        AvailableGamingSeconds = availableSeconds,
-                        AppSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
-                        AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
-                        GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-                    };
-                    gameQuotaExceededNotified = false;
-                    gameTenMinutesWarningNotified = false;
-                    intervalTenMinutesWarningNotified = false;
-                    isGamingModeActive = false; // Always start in School mode on new day/startup
-                    SaveDailyStatsToRegistry();
                 }
             }
+
+            Console.WriteLine($"Starting fresh daily stats for date: {today} with available gaming time: {availableSeconds / 60}m");
+            currentDailyStats = new DailyStatsData
+            {
+                Date = today,
+                TotalGamingSeconds = 0,
+                TotalComputerSeconds = 0,
+                AvailableGamingSeconds = availableSeconds,
+                GrantedBonusSeconds = 0,
+                AppSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+                AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+                GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            };
+            gameQuotaExceededNotified = false;
+            gameTenMinutesWarningNotified = false;
+            intervalTenMinutesWarningNotified = false;
+            isGamingModeActive = false; // Always start in School mode on new day/startup
+            SaveDailyStatsToRegistry();
         }
 
         private static void SaveDailyStatsToRegistry()
         {
             try
             {
-                if (currentDailyStats == null) return;
+                if (currentDailyStats == null || string.IsNullOrEmpty(currentDailyStats.Date)) return;
                 string json = JsonSerializer.Serialize(currentDailyStats);
-                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+
+                // 1. Save to date-specific subkey for immutable history
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey($@"Software\MonitorApp\Stats\{currentDailyStats.Date}"))
                 {
-                    key.SetValue("DailyStats", json);
-                    key.SetValue("DailyStatsDate", currentDailyStats.Date ?? "");
+                    key.SetValue("Data", json);
+                    key.SetValue("Date", currentDailyStats.Date);
+                }
+
+                // 2. Save to root key for backwards compatibility
+                using (RegistryKey rootKey = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    rootKey.SetValue("DailyStats", json);
+                    rootKey.SetValue("DailyStatsDate", currentDailyStats.Date);
+                    rootKey.SetValue("LastActiveDate", currentDailyStats.Date);
                 }
             }
             catch (Exception ex)
@@ -1610,40 +1862,135 @@ namespace Monitor
             }
         }
 
-        private static void LoadDailyStatsFromRegistry()
+        private static DailyStatsData LoadDailyStatsForDate(string date)
         {
             try
             {
-                string today = GetTrueBucharestTime().ToString("yyyy-MM-dd");
-                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                // Try date-specific subkey first
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey($@"Software\MonitorApp\Stats\{date}"))
                 {
-                    var dateVal = key.GetValue("DailyStatsDate");
-                    var statsVal = key.GetValue("DailyStats");
-
-                    if (dateVal != null && dateVal.ToString() == today && statsVal != null)
+                    if (key != null)
                     {
-                        var loaded = JsonSerializer.Deserialize<DailyStatsData>(statsVal.ToString());
-                        if (loaded != null && loaded.Date == today)
+                        var dataVal = key.GetValue("Data");
+                        if (dataVal != null)
                         {
-                            currentDailyStats = loaded;
-                            if (currentDailyStats.AppSeconds == null)
-                                currentDailyStats.AppSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                            if (currentDailyStats.AudioSeconds == null)
-                                currentDailyStats.AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                            if (currentDailyStats.GameSeconds == null)
-                                currentDailyStats.GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                            if (currentDailyStats.AvailableGamingSeconds <= 0 && dailyGameTimeMinutes > 0)
-                                currentDailyStats.AvailableGamingSeconds = dailyGameTimeMinutes * 60;
+                            var loaded = JsonSerializer.Deserialize<DailyStatsData>(dataVal.ToString());
+                            if (loaded != null && loaded.Date == date)
+                            {
+                                NormalizeStats(loaded);
+                                return loaded;
+                            }
+                        }
+                    }
+                }
 
-                            Console.WriteLine($"Loaded existing daily stats for {today}: Gaming={currentDailyStats.TotalGamingSeconds}s / {currentDailyStats.AvailableGamingSeconds}s");
-                            return;
+                // Fallback to root key if matching date
+                using (RegistryKey rootKey = Registry.CurrentUser.OpenSubKey(@"Software\MonitorApp"))
+                {
+                    if (rootKey != null)
+                    {
+                        var dateVal = rootKey.GetValue("DailyStatsDate");
+                        var statsVal = rootKey.GetValue("DailyStats");
+                        if (dateVal != null && dateVal.ToString() == date && statsVal != null)
+                        {
+                            var loaded = JsonSerializer.Deserialize<DailyStatsData>(statsVal.ToString());
+                            if (loaded != null && loaded.Date == date)
+                            {
+                                NormalizeStats(loaded);
+                                return loaded;
+                            }
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Failed to load daily stats from registry: {ex.Message}");
+                Console.WriteLine($"Failed to load daily stats for {date}: {ex.Message}");
+            }
+            return null;
+        }
+
+        private static void NormalizeStats(DailyStatsData stats)
+        {
+            if (stats == null) return;
+            if (stats.AppSeconds == null)
+                stats.AppSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (stats.AudioSeconds == null)
+                stats.AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (stats.GameSeconds == null)
+                stats.GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (stats.AvailableGamingSeconds <= 0 && dailyGameTimeMinutes > 0)
+                stats.AvailableGamingSeconds = dailyGameTimeMinutes * 60;
+        }
+
+        private static DailyStatsData GetMostRecentPastDailyStats(string currentDateStr)
+        {
+            try
+            {
+                if (!DateTime.TryParse(currentDateStr, out DateTime currentDate))
+                    return null;
+
+                DailyStatsData bestStats = null;
+                DateTime bestDate = DateTime.MinValue;
+
+                using (RegistryKey statsRoot = Registry.CurrentUser.OpenSubKey(@"Software\MonitorApp\Stats"))
+                {
+                    if (statsRoot != null)
+                    {
+                        foreach (var subKeyName in statsRoot.GetSubKeyNames())
+                        {
+                            if (DateTime.TryParse(subKeyName, out DateTime subDate))
+                            {
+                                if (subDate < currentDate.Date && subDate > bestDate)
+                                {
+                                    var stats = LoadDailyStatsForDate(subKeyName);
+                                    if (stats != null)
+                                    {
+                                        bestDate = subDate;
+                                        bestStats = stats;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (bestStats != null) return bestStats;
+
+                // Fallback check root key
+                using (RegistryKey rootKey = Registry.CurrentUser.OpenSubKey(@"Software\MonitorApp"))
+                {
+                    if (rootKey != null)
+                    {
+                        var dateVal = rootKey.GetValue("DailyStatsDate");
+                        var statsVal = rootKey.GetValue("DailyStats");
+                        if (dateVal != null && statsVal != null && DateTime.TryParse(dateVal.ToString(), out DateTime rootDate))
+                        {
+                            if (rootDate < currentDate.Date)
+                            {
+                                var loaded = JsonSerializer.Deserialize<DailyStatsData>(statsVal.ToString());
+                                if (loaded != null)
+                                {
+                                    NormalizeStats(loaded);
+                                    return loaded;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static void LoadDailyStatsFromRegistry()
+        {
+            string today = GetTrueBucharestTime().ToString("yyyy-MM-dd");
+            var loaded = LoadDailyStatsForDate(today);
+            if (loaded != null)
+            {
+                currentDailyStats = loaded;
+                Console.WriteLine($"Loaded existing daily stats for {today}: Gaming={currentDailyStats.TotalGamingSeconds}s / {currentDailyStats.AvailableGamingSeconds}s");
             }
         }
 
@@ -1716,32 +2063,32 @@ namespace Monitor
                 int pcRemainingSec = totalPcSec % 60;
 
                 StringBuilder sb = new StringBuilder();
-                sb.AppendLine("📊 **Raport Zilnic Activitate**");
-                sb.AppendLine($"- **Data:** `{currentDailyStats.Date}`");
-                sb.AppendLine($"- **Utilizator:** `{currentUser}`");
-                sb.AppendLine($"- **Ora:** `{GetTrueBucharestTime():HH:mm}`");
-                sb.AppendLine($"- **Interval Orar Permis:** `{GetIntervalDisplayText()}`");
-                sb.AppendLine($"- **Timp Total PC Pornit (Astăzi):** `{pcHours}h {pcMinutes}m {pcRemainingSec}s` ({totalPcSec / 60} minute)");
-                sb.AppendLine($"- **Mod Curent:** {(isGamingModeActive ? "🟢 **Mod Gaming ACTIV**" : "🔵 **Mod Școală ACTIV**")}");
+                sb.AppendLine("📊 **Daily Activity Report**");
+                sb.AppendLine($"- **Date:** `{currentDailyStats.Date}`");
+                sb.AppendLine($"- **User:** `{currentUser}`");
+                sb.AppendLine($"- **Time:** `{GetTrueBucharestTime():HH:mm}`");
+                sb.AppendLine($"- **Allowed Time Window:** `{GetIntervalDisplayText()}`");
+                sb.AppendLine($"- **Total PC On Time (Today):** `{pcHours}h {pcMinutes}m {pcRemainingSec}s` ({totalPcSec / 60} minutes)");
+                sb.AppendLine($"- **Current Mode:** {(isGamingModeActive ? "🟢 **Gaming Mode ACTIVE**" : "🔵 **School Mode ACTIVE**")}");
 
                 // Gaming quota summary
                 if (availableSec > 0)
                 {
                     int percent = (int)Math.Round((double)totalGamingSec / availableSec * 100);
                     bool isOver = totalGamingSec >= availableSec;
-                    string quotaStatus = isOver ? "🔴 **Epuizat (Mod Școală Forțat)**" : $"🟢 **{remainingMin}m {remainingRemSec}s Rămase**";
-                    sb.AppendLine($"- **Timp Gaming Utilizat:** `{gamingMin}m {gamingRemSec}s` / `{availableMin}m` ({percent}%)");
-                    sb.AppendLine($"- **Bancă Disponibilă (cu report):** `{availableMin}m` (Bază zilnică: `{dailyGameTimeMinutes}m`, Limită max report: `{5 * dailyGameTimeMinutes}m`)");
-                    sb.AppendLine($"- **Status Cota Gaming:** {quotaStatus}");
+                    string quotaStatus = isOver ? "🔴 **Expired (Forced School Mode)**" : $"🟢 **{remainingMin}m {remainingRemSec}s Remaining**";
+                    sb.AppendLine($"- **Gaming Time Used:** `{gamingMin}m {gamingRemSec}s` / `{availableMin}m` ({percent}%)");
+                    sb.AppendLine($"- **Available Bank (with carryover):** `{availableMin}m` (Daily base: `{dailyGameTimeMinutes}m`, Max carryover limit: `{5 * dailyGameTimeMinutes}m`)");
+                    sb.AppendLine($"- **Gaming Quota Status:** {quotaStatus}");
                 }
                 else
                 {
-                    sb.AppendLine($"- **Timp Gaming Înregistrat:** `{gamingMin}m {gamingRemSec}s` (Fără cotă zilnică definită)");
+                    sb.AppendLine($"- **Gaming Time Recorded:** `{gamingMin}m {gamingRemSec}s` (No daily quota defined)");
                 }
                 sb.AppendLine();
 
                 // Detailed breakdown of Games / Blocked Sites
-                sb.AppendLine("**🎮 Activitate Jocuri & Site-uri Blocate (Zilnic):**");
+                sb.AppendLine("**🎮 Gaming & Blocked Activity (Daily):**");
                 var sortedGameStats = currentDailyStats.GameSeconds.OrderByDescending(x => x.Value).ToList();
                 bool anyGame = false;
                 foreach (var stat in sortedGameStats)
@@ -1756,12 +2103,12 @@ namespace Monitor
                 }
                 if (!anyGame)
                 {
-                    sb.AppendLine("- nici o activitate de gaming astăzi");
+                    sb.AppendLine("- No gaming activity recorded today");
                 }
                 sb.AppendLine();
 
                 // Detailed breakdown of All Foreground Apps
-                sb.AppendLine("**💻 Timp Prim-plan pe Aplicații (Zilnic):**");
+                sb.AppendLine("**💻 Foreground Application Time (Daily):**");
                 var sortedAppStats = currentDailyStats.AppSeconds.OrderByDescending(x => x.Value).ToList();
                 bool anyApp = false;
                 foreach (var stat in sortedAppStats)
@@ -1776,12 +2123,12 @@ namespace Monitor
                 }
                 if (!anyApp)
                 {
-                    sb.AppendLine("- nici o aplicație înregistrată astăzi");
+                    sb.AppendLine("- No application activity recorded today");
                 }
                 sb.AppendLine();
 
                 // Detailed breakdown of Audio
-                sb.AppendLine("**🔊 Timp Audio (Zilnic):**");
+                sb.AppendLine("**🔊 Audio Playback Time (Daily):**");
                 var sortedAudioStats = currentDailyStats.AudioSeconds.OrderByDescending(x => x.Value).ToList();
                 bool anyAudio = false;
                 foreach (var stat in sortedAudioStats)
@@ -1796,7 +2143,7 @@ namespace Monitor
                 }
                 if (!anyAudio)
                 {
-                    sb.AppendLine("- nici un sunet înregistrat astăzi");
+                    sb.AppendLine("- No audio playback recorded today");
                 }
 
                 await SendDiscordChunkedMessageAsync(sb.ToString());
