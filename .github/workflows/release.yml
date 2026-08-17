@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write # Needed to create releases and upload assets
 
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
+
 jobs:
   build:
     runs-on: windows-latest
@@ -18,12 +21,28 @@ jobs:
       with:
         fetch-depth: 0 # Required to fetch all history for version bumping
         
-    - name: Bump version and push tag
+    - name: Bump version and determine tag
       id: tag_version
-      uses: mathieudutour/github-tag-action@v6.2
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        default_bump: patch # Automatically increments the version (e.g., v1.0.0 -> v1.0.1)
+      shell: pwsh
+      run: |
+        git fetch --tags
+        $allTags = git tag -l --sort=-v:refname "v*"
+        $latestTag = $allTags | Where-Object { $_ -match '^v\d+\.\d+\.\d+' } | Select-Object -First 1
+        if (-not $latestTag) { $latestTag = "v0.0.0" }
+        
+        $cleanVer = $latestTag.TrimStart('v')
+        $parts = $cleanVer.Split('.')
+        $major = [int]$parts[0]
+        $minor = [int]$parts[1]
+        $patch = [int]$parts[2] + 1
+        
+        $newVersion = "$major.$minor.$patch"
+        $newTag = "v$newVersion"
+        
+        Write-Host "Determined next version: $latestTag -> $newTag ($newVersion)"
+        
+        "new_version=$newVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "new_tag=$newTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
@@ -34,10 +53,7 @@ jobs:
       run: dotnet publish Monitor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:Version=${{ steps.tag_version.outputs.new_version }}
       
     - name: Create Release and Upload Asset
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ steps.tag_version.outputs.new_tag }}
-        name: Release ${{ steps.tag_version.outputs.new_tag }}
-        files: bin/Release/net10.0-windows/win-x64/publish/Monitor.exe
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release create "${{ steps.tag_version.outputs.new_tag }}" bin/Release/net10.0-windows/win-x64/publish/Monitor.exe --title "Release ${{ steps.tag_version.outputs.new_tag }}" --generate-notes
