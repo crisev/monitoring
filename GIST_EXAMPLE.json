@@ -1,6 +1,7 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "downloadUrl": "https://github.com/crisev/monitoring/releases/download/v0.0.3/Monitor.exe",
+  "mode": "whitelist",
   "timeZone": "Europe/Bucharest",
   "scanIntervalSeconds": 5,
   "reportIntervalSeconds": 300,
@@ -8,9 +9,28 @@
   "dailyGameTimeMinutes": 60,
   "maxScreenTimeMinutes": 180,
   "dailyReportIntervalMinutes": 30,
+  "allowedProcessNames": [
+    "msedge",
+    "WINWORD",
+    "EXCEL",
+    "POWERPNT",
+    "Code",
+    "notepad",
+    "calculator",
+    "CalculatorApp",
+    "AcroRd32",
+    "acrobat"
+  ],
+  "allowedWebsites": [
+    "https://*.wikipedia.org",
+    "https://classroom.google.com",
+    "https://*.khanacademy.org",
+    "https://*.duolingo.com",
+    "https://translate.google.com"
+  ],
   "bonusMinutes": {
-    "date": "2026-08-16",
-    "minutes": 30
+    "date": "2026-09-13",
+    "minutes": 0
   },
   "intervals": [
     {
@@ -27,14 +47,13 @@
   "blockedProcessNames": [
     "duckduckgo",
     "opera",
+    "firefox",
+    "tor",
     "GettingOverIt",
     "FPSChess-Win64-Shipping",
     "cs2",
     "steamwebhelper",
     "Discord",
-    "Grapples Galore",
-    "AimLab_tb",
-    "FortniteClient-Win64-Shipping",
     "chrome",
     "GeometryDash",
     "RobloxPlayerBeta"
@@ -43,15 +62,8 @@
     "YouTube",
     "Agar.io",
     "diep.io",
-    "EvoWorld",
-    "mope.io",
-    "Lordz.io",
     "Twitch",
-    "EVOWORLD",
-    "Game",
-    "CRYZEN",
     "Poki",
-    "Infinite Craft",
-    "ZOMBS.io"
+    "Infinite Craft"
   ]
 }

@@ -10,10 +10,16 @@
  * --- WHAT IT DOES ---
  * - Monitors active foreground applications, tracking the active process name and window title.
  * - Tracks background and foreground audio playback activity using CoreAudio APIs.
- * - Enforces process restrictions by checking running processes against a blocklist
- *   (matching by process name or window title keywords) and terminating any matches.
- * - Aggregates time spent on active foreground applications and applications playing audio
- *   (recorded in seconds).
+ * - Dual Enforcement Modes:
+ *   1. Whitelist Mode (Default & Resilient): Only explicitly approved applications and essential
+ *      Windows UI/system processes (with Session 0 isolation) can run during School Mode.
+ *   2. Blacklist Mode (Legacy Fallback): Terminates matches from a blocked process/title list.
+ * - Edge Browser Registry Enforcement: Dynamically configures Microsoft Edge policies in Windows Registry
+ *   (URLBlocklist, URLAllowlist, InPrivateModeAvailability=1, ExtensionInstallBlocklist) to create an
+ *   unbypassable web sandbox during School Mode.
+ * - Self-Regulated Play Management: Provides a System Tray toggle (GAME ON / GAME OFF) empowering the user
+ *   to start/pause their allocated daily game time, seamlessly toggling Edge policies and whitelist rules.
+ * - Aggregates time spent on active foreground applications and applications playing audio (in seconds).
  * 
  * --- HOW IT COMMUNICATES ---
  * - Inbound: Periodically fetches a dynamic blocklist from a raw GitHub Gist URL in JSON format.
@@ -45,6 +51,11 @@
  *  TODO: 
  *  - Remote Config Option A (Discord Bot): Interactive buttons/commands via Cloudflare Worker + GitHub Gist API (GitHub PAT with gist scope; 0 changes to Monitor.exe).
  *  - Remote Config Option B (Mobile Web App): React/Next.js UI backed by Firebase Realtime Database (public read for Monitor.exe, email/pass auth write for admin).
+ *  - Tamper Protection & Permissions: Deploy to `C:\Program Files\SystemMonitoring\monitor.exe` (Standard Users have Read & Execute only, preventing accidental or intentional deletion).
+ *  - Privileged Auto-Updater Architecture: When running from Program Files under a Standard User session, in-process self-updates fail with UnauthorizedAccessException. Build a dual-task architecture:
+ *      1. Interactive User Task: Runs monitor.exe at user logon in session (Tray icon, notifications, active window, screenshot capture).
+ *      2. Background SYSTEM Updater: Scheduled task running as NT AUTHORITY\SYSTEM (e.g., `monitor.exe --update-only`) with write privileges in Program Files to check/apply updates.
+ *  - Updater Atomic Rollback: Ensure UpdateApplicationAsync rolls back .bak to .exe if moving .new fails, preventing a missing executable.
  
  * ======================================================================================
  */
@@ -190,6 +201,115 @@ namespace Monitor
 
         [DllImport("advapi32.dll", SetLastError = true)]
         static extern bool SetKernelObjectSecurity(IntPtr Handle, int securityInformation, [In] byte[] pSecurityDescriptor);
+
+        /// <summary>
+        /// Enforcement Mode:
+        /// - "whitelist": Only BaseWindowsProcesses + allowedProcessNames are permitted in user sessions.
+        /// - "blacklist": Legacy mode where only processes in blockedProcessNames/blockedPageTitles are terminated.
+        /// Configured via remote Gist ("mode": "whitelist" or "mode": "blacklist").
+        /// </summary>
+        private static string enforcementMode = "whitelist";
+
+        /// <summary>
+        /// Allowed application executables (without extension) during School Mode.
+        /// In Whitelist Mode, any executable in the user session NOT in this list or BaseWindowsProcesses is killed.
+        /// </summary>
+        private static List<string> allowedProcessNames = new List<string>
+        {
+            "msedge",
+            "WINWORD",
+            "EXCEL",
+            "POWERPNT",
+            "Code",
+            "notepad",
+            "calculator",
+            "CalculatorApp",
+            "AcroRd32",
+            "acrobat"
+        };
+
+        /// <summary>
+        /// Educational and safe websites allowed in Microsoft Edge during School Mode.
+        /// Edge enforces this natively via Windows Registry (URLBlocklist = ["*"], URLAllowlist = [these]).
+        /// </summary>
+        private static List<string> allowedWebsites = new List<string>
+        {
+            "https://*.wikipedia.org",
+            "https://classroom.google.com",
+            "https://*.khanacademy.org",
+            "https://*.duolingo.com",
+            "https://translate.google.com"
+        };
+
+        /// <summary>
+        /// Essential Windows OS processes that run in interactive user sessions (SessionId > 0).
+        /// =========================================================================================
+        /// WHY THIS BASE WHITELIST EXISTS:
+        /// 1. Session 0 processes (svchost, services, lsass, drivers) are already filtered out.
+        /// 2. In user sessions (Session 1+), Windows runs several GUI shell and broker helpers.
+        /// 3. Killing critical processes like explorer, csrss, winlogon, or dwm can crash the shell
+        ///    or cause a Blue Screen of Death (BSOD).
+        /// 4. Potentially dangerous Windows executables (cmd.exe, powershell.exe, mshta.exe,
+        ///    wscript.exe, cscript.exe, regedit.exe) are DELIBERATELY EXCLUDED from this list.
+        ///    They will be terminated unless explicitly added to allowedProcessNames by the parent.
+        /// =========================================================================================
+        /// </summary>
+        public static readonly HashSet<string> BaseWindowsProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Windows Core Shell, Taskbar & Desktop Rendering
+            "explorer",                   // Windows Desktop shell, taskbar, start menu, and file browser
+            "sihost",                     // Shell Infrastructure Host (action center, notifications, tray)
+            "taskhostw",                  // Host Process for Windows Tasks in user session
+            "ctfmon",                     // CTF Loader (Text Services Framework, keyboard inputs, language bar)
+            "dwm",                        // Desktop Window Manager (GPU compositing and window borders)
+            "conhost",                    // Console Window Host (terminal host for standard console apps)
+            "fontdrvhost",                // Usermode Font Driver Host
+            "csrss",                      // Client/Server Runtime Subsystem (critical Windows user-mode subsystem)
+            "winlogon",                   // Windows Logon Process (handles lock/unlock/CAD)
+            "svchost",                    // Service Host (runs user-session services e.g., Windows Audio)
+            "dllhost",                    // COM Surrogate
+            "unsecapp",                   // WMI Sink Helper
+            "UserOOBEBroker",             // User Out-of-box experience broker
+
+            // Windows 10/11 UI & System Components
+            "StartMenuExperienceHost",    // Windows Start Menu UI
+            "SearchHost",                 // Windows Search host (Win11)
+            "SearchApp",                  // Windows Search host (Win10)
+            "SearchUI",                   // Legacy Windows Search UI
+            "ShellExperienceHost",        // Windows Shell flyouts (calendar, volume, network flyout)
+            "ShellHost",                  // Windows Shell host
+            "LockApp",                    // Windows Lock screen
+            "TextInputHost",              // Windows Touch keyboard, emoji picker (Win+.), clipboard history (Win+V)
+
+            // Security & Store App Brokers
+            "SecurityHealthSystray",      // Windows Security notification area icon
+            "SecurityHealthHost",         // Windows Defender security dialogs
+            "DefenderSessionHelper",      // Microsoft Defender session helper
+            "smartscreen",                // Windows Defender SmartScreen
+            "RuntimeBroker",              // Windows Store App permissions & background tasks broker
+            "ApplicationFrameHost",       // Container frame for modern UWP / Store apps
+            "audiodg",                    // Windows Audio Device Graph Isolation (sound output)
+            "SystemSettings",             // Windows Settings app (allows adjusting display/volume/wifi)
+            
+            // Windows Web & Component Runtime
+            "msedgewebview2"              // Microsoft Edge WebView2 (used by Windows Search, Widgets, modern apps)
+        };
+
+        private static readonly Dictionary<string, DateTime> recentlyBlockedNotifications = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+        private static void NotifyProcessBlocked(string procName)
+        {
+            DateTime now = DateTime.UtcNow;
+            if (!recentlyBlockedNotifications.TryGetValue(procName, out var lastTime) || (now - lastTime).TotalSeconds >= 45)
+            {
+                recentlyBlockedNotifications[procName] = now;
+                TrayService.Instance?.ShowNotification(
+                    "School Mode Active",
+                    $"'{procName}' is not on the approved school application list.\nSwitch to Gaming Mode if you wish to play.",
+                    ToolTipIcon.Warning
+                );
+            }
+        }
 
         private static List<string> blockedProcessNames = new List<string> 
         { 
@@ -578,19 +698,49 @@ namespace Monitor
         {
             try
             {
+                // In Gaming Mode, whitelist restrictions are paused to allow approved gaming activity
+                if (isGamingModeActive)
+                {
+                    return;
+                }
+
                 var allProcesses = Process.GetProcesses();
+                int currentPid = Environment.ProcessId;
+                string currentProcName = Process.GetCurrentProcess().ProcessName;
+
                 foreach (var proc in allProcesses)
                 {
                     try
                     {
                         string procName = proc.ProcessName;
-                        string mainTitle = "";
-                        try
-                        {
-                            mainTitle = proc.MainWindowTitle;
-                        }
-                        catch { /* Ignore access denied on system processes */ }
 
+                        // =========================================================================
+                        // 1. WHITELIST MODE (Default & Recommended)
+                        // =========================================================================
+                        if (enforcementMode.Equals("whitelist", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // 1a. Session 0 Isolation: Never kill Windows kernel/services/drivers running in Session 0
+                            if (proc.SessionId == 0) continue;
+
+                            // 1b. Self-Preservation: Never terminate our own activity monitor process
+                            if (proc.Id == currentPid || procName.Equals(currentProcName, StringComparison.OrdinalIgnoreCase)) continue;
+
+                            // 1c. Base Windows Whitelist: Essential Windows GUI, Desktop shell & input components
+                            if (BaseWindowsProcesses.Contains(procName)) continue;
+
+                            // 1d. Configured Allowed Applications (e.g. Edge, Word, Notepad, VS Code)
+                            if (allowedProcessNames.Contains(procName, StringComparer.OrdinalIgnoreCase)) continue;
+
+                            // Process is unauthorized in School Mode -> Terminate immediately
+                            Console.WriteLine($"[WHITELIST] Terminating unauthorized process '{procName}' (PID: {proc.Id}, Session: {proc.SessionId}).");
+                            proc.Kill(true);
+                            NotifyProcessBlocked(procName);
+                            continue;
+                        }
+
+                        // =========================================================================
+                        // 2. BLACKLIST FALLBACK MODE
+                        // =========================================================================
                         bool isBlocked = false;
 
                         if (blockedProcessNames.Contains(procName, StringComparer.OrdinalIgnoreCase))
@@ -600,15 +750,25 @@ namespace Monitor
                             isBlocked = true;
                         }
 
-                        if (!isBlocked && !string.IsNullOrEmpty(mainTitle))
+                        if (!isBlocked)
                         {
-                            foreach (var keyword in blockedPageTitles)
+                            string mainTitle = "";
+                            try
                             {
-                                if (mainTitle.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                                mainTitle = proc.MainWindowTitle;
+                            }
+                            catch { /* Ignore access denied on system processes */ }
+
+                            if (!string.IsNullOrEmpty(mainTitle))
+                            {
+                                foreach (var keyword in blockedPageTitles)
                                 {
-                                    Console.WriteLine($"BLOCKED: Title '{mainTitle}' contains keyword '{keyword}' - killing process '{procName}'.");
-                                    proc.Kill(true);
-                                    break;
+                                    if (mainTitle.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        Console.WriteLine($"BLOCKED: Title '{mainTitle}' contains keyword '{keyword}' - killing process '{procName}'.");
+                                        proc.Kill(true);
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -690,6 +850,7 @@ namespace Monitor
         private static bool isDebugMode = false;
         private static bool noShutdown = false;
         private static bool forceUpdate = false;
+        private static bool isAdminUser = false;
 
         public static bool IsGamingModeActive => isGamingModeActive;
 
@@ -749,7 +910,7 @@ namespace Monitor
             if (enable)
             {
                 int remainingSeconds = currentDailyStats.AvailableGamingSeconds - currentDailyStats.TotalGamingSeconds;
-                if (remainingSeconds <= 0 && currentDailyStats.AvailableGamingSeconds > 0)
+                if (!isAdminUser && remainingSeconds <= 0 && currentDailyStats.AvailableGamingSeconds > 0)
                 {
                     TrayService.Instance?.ShowNotification("Gaming Time Expired", "Today's gaming quota has already been spent.", ToolTipIcon.Warning);
                     return;
@@ -760,14 +921,31 @@ namespace Monitor
                 }
                 isGamingModeActive = true;
                 Console.WriteLine("Gaming Mode turned ON by user.");
+
+                // Lift Edge website restrictions for the duration of the gaming session
+                if (!isAdminUser)
+                {
+                    EdgePolicyManager.ApplyGamingModePolicies();
+                }
+
                 TrayService.Instance?.ShowNotification("🎮 Gaming Mode ACTIVATED", $"Gaming session started. Remaining time: {remainingSeconds / 60} minute(s).", ToolTipIcon.Info);
             }
             else
             {
                 isGamingModeActive = false;
                 Console.WriteLine("Gaming Mode turned OFF by user. Enforcing School mode.");
-                KillBlockedProcesses();
-                TrayService.Instance?.ShowNotification("🔵 School Mode ACTIVATED", "Gaming session stopped. Restricted applications are blocked.", ToolTipIcon.Info);
+
+                if (!isAdminUser)
+                {
+                    // Enforce Edge website whitelist, startup clean page, and browser hardening
+                    EdgePolicyManager.ApplySchoolModePolicies(allowedWebsites);
+
+                    // Close Edge so preloaded media/video streams and unauthorized open tabs are terminated
+                    EdgePolicyManager.CloseEdgeGracefully();
+
+                    KillBlockedProcesses();
+                }
+                TrayService.Instance?.ShowNotification("🔵 School Mode ACTIVATED", "Gaming session stopped. Whitelist applications and websites enforced.", ToolTipIcon.Info);
             }
 
             TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, currentDailyStats.TotalScreenSeconds, maxScreenTimeMinutes, isGamingModeActive, currentDailyStats);
@@ -787,6 +965,16 @@ namespace Monitor
             noShutdown = args.Contains("--no-shutdown", StringComparer.OrdinalIgnoreCase);
             forceUpdate = args.Contains("--test-update", StringComparer.OrdinalIgnoreCase) || 
                           args.Contains("--force-update", StringComparer.OrdinalIgnoreCase);
+
+            // Detect if the current Windows user account belongs to the Administrators group.
+            // When true, all restrictions (process killing, Edge policies, time registry lockdowns,
+            // interval/screen-time shutdowns) and all monitoring (screenshots, Discord/daily reports)
+            // are completely bypassed. The app still runs (tray icon, config refresh) but is passive.
+            isAdminUser = IsCurrentUserAdmin();
+            if (isAdminUser)
+            {
+                Console.WriteLine("[Admin] Current user is a member of the Administrators group. All restrictions and monitoring are disabled.");
+            }
 
             // Hide or allocate console window depending on --visible, isDebugMode, noShutdown or forceUpdate
             if (args.Contains("--visible", StringComparer.OrdinalIgnoreCase) || isDebugMode || noShutdown || forceUpdate)
@@ -822,10 +1010,22 @@ namespace Monitor
             }
 
             // Protect the process from being terminated by the current user (requires Admin to kill)
-            ProtectProcess();
+            if (!isAdminUser)
+            {
+                ProtectProcess();
+            }
 
             // Enforce Windows Registry policies to disable Date & Time modification natively
-            ApplyWindowsTimeRegistryRestrictions();
+            if (!isAdminUser)
+            {
+                ApplyWindowsTimeRegistryRestrictions();
+            }
+
+            // Enforce initial Edge browser policies (School Mode active on startup unless Gaming Mode is toggled)
+            if (!isAdminUser && !isGamingModeActive)
+            {
+                EdgePolicyManager.ApplySchoolModePolicies(allowedWebsites);
+            }
 
             int loops = 0;
 
@@ -859,7 +1059,10 @@ namespace Monitor
             TrayService.Start();
 
             string localVer = GetLocalVersion();
-            await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}` (Bucharest)");
+            if (!isAdminUser)
+            {
+                await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}` (Bucharest)");
+            }
 
             // Always try to fetch the latest configuration and intervals from the Gist first (retrying on startup in case network is initializing)
             bool gistFetched = false;
@@ -883,7 +1086,7 @@ namespace Monitor
             TimeSpan currentTime = GetTrueBucharestTime().TimeOfDay;
             var activeInterval = GetActiveInterval(currentTime);
 
-            if (activeInterval == null && configuredIntervals.Count > 0 && !isDebugMode)
+            if (activeInterval == null && configuredIntervals.Count > 0 && !isDebugMode && !isAdminUser)
             {
                 await InitiateContinuousShutdownAsync("No active time interval");
                 return;
@@ -911,7 +1114,7 @@ namespace Monitor
                     }
 
                     // Check for MaxScreenTimeMinutes limitation (10m, 5m, 1m warnings & shutdown)
-                    if (maxScreenTimeMinutes > 0 && !isDebugMode)
+                    if (maxScreenTimeMinutes > 0 && !isDebugMode && !isAdminUser)
                     {
                         int maxScreenSec = maxScreenTimeMinutes * 60;
                         int remainingScreenSec = maxScreenSec - currentDailyStats.TotalScreenSeconds;
@@ -979,7 +1182,7 @@ namespace Monitor
 
                     bool isInInterval = currentActiveInterval != null || isDebugMode;
 
-                    if (wasInInterval && !isInInterval)
+                    if (wasInInterval && !isInInterval && !isAdminUser)
                     {
                         Console.WriteLine("Interval finished. Performing a final check of Gist to see if interval was extended...");
                         
@@ -1013,7 +1216,7 @@ namespace Monitor
                     wasInInterval = isInInterval;
 
                     // 1. Check for 10-minute Computer Interval Warning (before PC shutdown)
-                    if (currentActiveInterval != null && !isDebugMode)
+                    if (currentActiveInterval != null && !isDebugMode && !isAdminUser)
                     {
                         TimeSpan end = currentActiveInterval.End;
                         TimeSpan remainingInInterval;
@@ -1057,9 +1260,11 @@ namespace Monitor
                         }
 
                         // Check if total gaming time has reached the allowed quota (daily + carry-over)
-                        if (currentDailyStats.AvailableGamingSeconds > 0 && currentDailyStats.TotalGamingSeconds >= currentDailyStats.AvailableGamingSeconds)
+                        if (!isAdminUser && currentDailyStats.AvailableGamingSeconds > 0 && currentDailyStats.TotalGamingSeconds >= currentDailyStats.AvailableGamingSeconds)
                         {
                             isGamingModeActive = false;
+                            EdgePolicyManager.ApplySchoolModePolicies(allowedWebsites);
+                            EdgePolicyManager.CloseEdgeGracefully();
                             KillBlockedProcesses();
 
                             TrayService.Instance?.ShowNotification("Gaming Time Expired", "Daily gaming quota reached. School Mode has been activated.", ToolTipIcon.Warning);
@@ -1072,7 +1277,7 @@ namespace Monitor
                             }
                         }
                     }
-                    else
+                    else if (!isAdminUser)
                     {
                         // In School Mode (Gaming Mode is OFF): actively terminate prohibited processes
                         KillBlockedProcesses();
@@ -1165,15 +1370,15 @@ namespace Monitor
                     // Update System Tray UI & Tooltip
                     TrayService.Instance?.UpdateStatus(GetIntervalDisplayText(), currentDailyStats.TotalGamingSeconds, currentDailyStats.AvailableGamingSeconds, currentDailyStats.TotalComputerSeconds, currentDailyStats.TotalScreenSeconds, maxScreenTimeMinutes, isGamingModeActive, currentDailyStats);
 
-                    // 4. Periodic Screenshot to Discord
-                    if (screenshotStopwatch.Elapsed.TotalSeconds >= screenshotIntervalSeconds)
+                    // 4. Periodic Screenshot to Discord (skipped for admin users)
+                    if (!isAdminUser && screenshotStopwatch.Elapsed.TotalSeconds >= screenshotIntervalSeconds)
                     {
                         screenshotStopwatch.Restart();
                         await CaptureAndSendScreenshotAsync();
                     }
 
-                    // 5. Periodic Daily Stats Report to Discord (e.g. every 30 minutes)
-                    if (dailyReportStopwatch.Elapsed.TotalMinutes >= dailyReportIntervalMinutes)
+                    // 5. Periodic Daily Stats Report to Discord (e.g. every 30 minutes, skipped for admin users)
+                    if (!isAdminUser && dailyReportStopwatch.Elapsed.TotalMinutes >= dailyReportIntervalMinutes)
                     {
                         dailyReportStopwatch.Restart();
                         await SendDailyReportAsync();
@@ -1234,6 +1439,16 @@ namespace Monitor
         {
             if (string.IsNullOrEmpty(processName)) return false;
 
+            // In Whitelist mode: Any running process that is NOT an essential Windows OS component
+            // and NOT in allowedProcessNames is tracked as game/play activity.
+            if (enforcementMode.Equals("whitelist", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!BaseWindowsProcesses.Contains(processName) && !allowedProcessNames.Contains(processName, StringComparer.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
             if (blockedProcessNames.Contains(processName, StringComparer.OrdinalIgnoreCase))
             {
                 return true;
@@ -1280,6 +1495,44 @@ namespace Monitor
                     using (JsonDocument doc = JsonDocument.Parse(response))
                     {
                         var root = doc.RootElement;
+
+                        // Parse enforcement mode ("whitelist" or "blacklist")
+                        if (root.TryGetProperty("mode", out var modeElement) || root.TryGetProperty("enforcementMode", out modeElement))
+                        {
+                            string modeVal = modeElement.GetString();
+                            if (!string.IsNullOrWhiteSpace(modeVal))
+                            {
+                                enforcementMode = modeVal.Trim().ToLowerInvariant();
+                                Console.WriteLine($"[Config] Enforcement mode set to: '{enforcementMode}'.");
+                            }
+                        }
+
+                        // Parse allowed process names for Whitelist mode
+                        if (root.TryGetProperty("allowedProcessNames", out var allowedProcElement))
+                        {
+                            allowedProcessNames = allowedProcElement.EnumerateArray()
+                                .Select(x => x.GetString())
+                                .Where(x => !string.IsNullOrEmpty(x))
+                                .ToList();
+                            Console.WriteLine($"[Config] Loaded {allowedProcessNames.Count} allowed process name(s).");
+                        }
+
+                        // Parse allowed websites for Microsoft Edge School Mode
+                        if (root.TryGetProperty("allowedWebsites", out var allowedWebsitesElement))
+                        {
+                            allowedWebsites = allowedWebsitesElement.EnumerateArray()
+                                .Select(x => x.GetString())
+                                .Where(x => !string.IsNullOrEmpty(x))
+                                .ToList();
+                            Console.WriteLine($"[Config] Loaded {allowedWebsites.Count} allowed website pattern(s).");
+
+                            // If currently in School Mode, immediately sync Edge policies to the updated allowlist
+                            if (!isAdminUser && !isGamingModeActive)
+                            {
+                                EdgePolicyManager.ApplySchoolModePolicies(allowedWebsites);
+                            }
+                        }
+
                         if (root.TryGetProperty("blockedProcessNames", out var processNamesElement))
                         {
                             blockedProcessNames = processNamesElement.EnumerateArray()
@@ -1613,6 +1866,15 @@ namespace Monitor
             }
         }
 
+        // TODO: Auto-Updater in Protected Environments (C:\Program Files)
+        // When deployed to `C:\Program Files\SystemMonitoring\`, running as a Standard User will cause
+        // this method to fail with UnauthorizedAccessException because standard users have Read/Execute permissions only.
+        // Future Implementation Options:
+        // 1. Dual-Task Model:
+        //    - User Task (Standard User): Runs interactive monitoring, tray icon, screenshots, notification balloons.
+        //    - SYSTEM Task (Task Scheduler / Service): Runs with `--update-only` flag periodically as NT AUTHORITY\SYSTEM,
+        //      which has write permissions in Program Files to safely download and replace monitor.exe.
+        // 2. Safe Rollback: Wrap File.Move operations in a try/catch rollback to restore currentExe from backupExe if newExe fails.
         private static async Task UpdateApplicationAsync(string remoteVersion)
         {
             try
@@ -2309,6 +2571,26 @@ namespace Monitor
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to send daily report: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Checks whether the current Windows user account is a member of the BUILTIN\Administrators group.
+        /// This checks group membership, NOT elevation — an admin user running without UAC elevation still returns true.
+        /// </summary>
+        private static bool IsCurrentUserAdmin()
+        {
+            try
+            {
+                using (var identity = WindowsIdentity.GetCurrent())
+                {
+                    var principal = new WindowsPrincipal(identity);
+                    return principal.IsInRole(WindowsBuiltInRole.Administrator);
+                }
+            }
+            catch
+            {
+                return false;
             }
         }
 
