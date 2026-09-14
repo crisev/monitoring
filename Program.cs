@@ -293,7 +293,31 @@ namespace Monitor
             "SystemSettings",             // Windows Settings app (allows adjusting display/volume/wifi)
             
             // Windows Web & Component Runtime
-            "msedgewebview2"              // Microsoft Edge WebView2 (used by Windows Search, Widgets, modern apps)
+            "msedgewebview2",             // Microsoft Edge WebView2 (used by Windows Search, Widgets, modern apps)
+
+            // Display & GPU Driver Helpers (terminating these causes screen flicker / GPU driver reset)
+            "igfxEM",
+            "igfxCUIService",
+            "igfxext",
+            "IntelGraphicsSoftware",
+            "nvcontainer",
+            "nvsphelper64",
+            "NVIDIA Share",
+            "nvcplui",
+            "RadeonSoftware",
+            "AMDRSServ",
+
+            // Audio & Peripheral Hardware Drivers
+            "RtkAudUService64",
+            "RtkAudUService",
+            "WavesSvc64",
+            "LogiOptions",
+            "razerhid",
+
+            // Windows System Background Services
+            "backgroundTaskHost",
+            "MoUsoCoreWorker",
+            "USOClient"
         };
 
         private static List<string> blockedProcessNames = new List<string> 
@@ -689,6 +713,12 @@ namespace Monitor
                     return;
                 }
 
+                // Startup Grace Period: Allow Windows shell, hardware drivers, and network to stabilize on login
+                if (startupStopwatch.Elapsed.TotalSeconds < StartupGracePeriodSeconds)
+                {
+                    return;
+                }
+
                 // In Gaming Mode, whitelist restrictions are paused to allow approved gaming activity
                 if (isGamingModeActive)
                 {
@@ -725,6 +755,7 @@ namespace Monitor
                             // Process is unauthorized in School Mode -> Terminate immediately
                             Console.WriteLine($"[WHITELIST] Terminating unauthorized process '{procName}' (PID: {proc.Id}, Session: {proc.SessionId}).");
                             proc.Kill(true);
+                            LogProcessKill(procName, proc.Id, proc.SessionId);
 
                             // Track kill count for daily reporting
                             if (currentDailyStats != null)
@@ -773,6 +804,17 @@ namespace Monitor
                     }
                     catch { /* Ignore errors for individual processes */ }
                 }
+            }
+            catch { }
+        }
+
+        private static void LogProcessKill(string procName, int pid, int sessionId)
+        {
+            try
+            {
+                string logLine = $"[{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}] [WHITELIST] Terminated unauthorized process '{procName}' (PID: {pid}, Session: {sessionId}){Environment.NewLine}";
+                string logPath = Path.Combine(Path.GetTempPath(), "monitor_killed_processes.log");
+                File.AppendAllText(logPath, logLine);
             }
             catch { }
         }
@@ -862,6 +904,8 @@ namespace Monitor
         private static int maxScreenTimeMinutes = 0;
         private static int dailyReportIntervalMinutes = 30;
         private static readonly Stopwatch dailyReportStopwatch = Stopwatch.StartNew();
+        private static readonly Stopwatch startupStopwatch = Stopwatch.StartNew();
+        private const int StartupGracePeriodSeconds = 30;
         private static DailyStatsData currentDailyStats = new DailyStatsData();
         private static bool gameQuotaExceededNotified = false;
         private static bool gameTenMinutesWarningNotified = false;
