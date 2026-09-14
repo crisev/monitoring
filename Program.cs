@@ -184,6 +184,35 @@ namespace Monitor
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool CloseDesktop(IntPtr hDesktop);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern bool Process32First(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        private struct PROCESSENTRY32
+        {
+            public uint dwSize;
+            public uint cntUsage;
+            public uint th32ProcessID;
+            public IntPtr th32DefaultHeapID;
+            public uint th32ModuleID;
+            public uint cntThreads;
+            public uint th32ParentProcessID;
+            public int pcPriClassBase;
+            public uint dwFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string szExeFile;
+        }
+
         private const int SM_CXSCREEN = 0;
         private const int SM_CYSCREEN = 1;
 
@@ -331,6 +360,55 @@ namespace Monitor
             "wsl",
             "wt"
         };
+
+        /// <summary>
+        /// Compilers, linkers, assemblers, and console runner tools used by Code::Blocks and MinGW/GCC/Clang.
+        /// These are automatically allowed so students can compile their C/C++ programs without interference.
+        /// </summary>
+        private static readonly HashSet<string> AllowedToolchainProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "cb_console_runner",
+            "cb_share_config",
+            "gcc",
+            "g++",
+            "c++",
+            "cc1",
+            "cc1plus",
+            "as",
+            "ld",
+            "collect2",
+            "ar",
+            "nm",
+            "objdump",
+            "ranlib",
+            "strip",
+            "windres",
+            "gdb",
+            "gdborig",
+            "mingw32-make",
+            "make",
+            "clang",
+            "clang++",
+            "lld"
+        };
+
+        /// <summary>
+        /// IDEs and programming environments whose spawned child processes (the student's compiled programs)
+        /// are automatically tracked and permitted to execute.
+        /// </summary>
+        private static readonly HashSet<string> AllowedIDEProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "codeblocks",
+            "cb_console_runner",
+            "gdb",
+            "Code",            // VS Code
+            "devenv"           // Visual Studio
+        };
+
+        /// <summary>
+        /// Optional project/workspace directories configured via Gist where any compiled program is allowed.
+        /// </summary>
+        private static List<string> allowedDirectories = new List<string>();
 
         private static List<string> blockedProcessNames = new List<string> 
         { 
@@ -741,6 +819,14 @@ namespace Monitor
                 int currentPid = Environment.ProcessId;
                 string currentProcName = Process.GetCurrentProcess().ProcessName;
 
+                // Capture process hierarchy snapshot to identify IDE-spawned programs (e.g. Code::Blocks -> main.exe)
+                Dictionary<int, int> parentMap = null;
+                Dictionary<int, string> nameMap = null;
+                if (enforcementMode.Equals("whitelist", StringComparison.OrdinalIgnoreCase))
+                {
+                    GetProcessTreeSnapshot(out parentMap, out nameMap);
+                }
+
                 foreach (var proc in allProcesses)
                 {
                     try
@@ -770,6 +856,15 @@ namespace Monitor
                             // Deliberately excludes command shells (cmd, powershell, etc.) which remain subject to monitoring.
                             // This eliminates needing to hardcode PC-specific touchpad/audio/GPU driver names across desktop/laptop!
                             if (IsExemptWindowsOrDriverProcess(proc)) continue;
+
+                            // 1f. Programming Toolchain Exemption (Compiler, Linker & Debugger tools: gcc, g++, ld, cb_console_runner)
+                            if (MatchesProcessName(procName, AllowedToolchainProcesses)) continue;
+
+                            // 1g. Child Process of Allowed IDE (Compiled student programs launched by Code::Blocks or VS Code)
+                            if (IsSpawnedByAllowedIDE(proc.Id, parentMap, nameMap)) continue;
+
+                            // 1h. Configured Allowed Project Directories (e.g. C:\Users\student\Projects)
+                            if (IsInAllowedDirectory(proc)) continue;
 
                             // Process is unauthorized in School Mode -> Terminate immediately
                             Console.WriteLine($"[WHITELIST] Terminating unauthorized process '{procName}' (PID: {proc.Id}, Session: {proc.SessionId}).");
@@ -958,6 +1053,105 @@ namespace Monitor
                 if (cleanProc.Equals(cleanItem, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
+            return false;
+        }
+
+        /// <summary>
+        /// Captures a fast snapshot of the system process tree to map each child PID to its parent PID and process name.
+        /// Executes in less than 1 millisecond via Win32 Toolhelp API.
+        /// </summary>
+        private static void GetProcessTreeSnapshot(out Dictionary<int, int> parentMap, out Dictionary<int, string> nameMap)
+        {
+            parentMap = new Dictionary<int, int>();
+            nameMap = new Dictionary<int, string>();
+
+            try
+            {
+                IntPtr handle = CreateToolhelp32Snapshot(2 /* TH32CS_SNAPPROCESS */, 0);
+                if (handle == IntPtr.Zero || handle == new IntPtr(-1)) return;
+
+                try
+                {
+                    var entry = new PROCESSENTRY32();
+                    entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+
+                    if (Process32First(handle, ref entry))
+                    {
+                        do
+                        {
+                            int pid = (int)entry.th32ProcessID;
+                            int ppid = (int)entry.th32ParentProcessID;
+                            string name = entry.szExeFile;
+                            if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                            {
+                                name = name.Substring(0, name.Length - 4);
+                            }
+
+                            parentMap[pid] = ppid;
+                            nameMap[pid] = name;
+                        } while (Process32Next(handle, ref entry));
+                    }
+                }
+                finally
+                {
+                    CloseHandle(handle);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Checks if a running process was launched by an approved development environment (e.g. Code::Blocks,
+        /// cb_console_runner, gdb, or VS Code) by inspecting up to 4 generations of parent/ancestor processes.
+        /// This enables student programs (e.g. main.exe, sum.exe, problem1.exe) to execute freely when run from the IDE.
+        /// </summary>
+        private static bool IsSpawnedByAllowedIDE(int pid, Dictionary<int, int> parentMap, Dictionary<int, string> nameMap)
+        {
+            if (parentMap == null || nameMap == null) return false;
+
+            int currentPid = pid;
+            for (int depth = 0; depth < 4; depth++)
+            {
+                if (!parentMap.TryGetValue(currentPid, out int parentPid) || parentPid <= 0)
+                    break;
+
+                if (nameMap.TryGetValue(parentPid, out string parentName))
+                {
+                    if (AllowedIDEProcessNames.Contains(parentName))
+                    {
+                        return true;
+                    }
+                }
+
+                currentPid = parentPid;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Checks if a process executable resides inside an explicitly configured allowed project directory.
+        /// </summary>
+        private static bool IsInAllowedDirectory(Process proc)
+        {
+            if (allowedDirectories == null || allowedDirectories.Count == 0) return false;
+
+            try
+            {
+                string fullPath = null;
+                try { fullPath = proc.MainModule?.FileName; } catch { }
+                if (string.IsNullOrEmpty(fullPath)) return false;
+
+                foreach (var dir in allowedDirectories)
+                {
+                    if (string.IsNullOrWhiteSpace(dir)) continue;
+                    if (fullPath.StartsWith(dir.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch { }
+
             return false;
         }
 
@@ -1723,6 +1917,16 @@ namespace Monitor
                                 .Where(x => !string.IsNullOrEmpty(x))
                                 .ToList();
                             Console.WriteLine($"[Config] Loaded {allowedProcessNames.Count} allowed process name(s).");
+                        }
+
+                        // Parse optional allowed directories (e.g. coding project workspaces)
+                        if (root.TryGetProperty("allowedDirectories", out var allowedDirsElement))
+                        {
+                            allowedDirectories = allowedDirsElement.EnumerateArray()
+                                .Select(x => x.GetString())
+                                .Where(x => !string.IsNullOrEmpty(x))
+                                .ToList();
+                            Console.WriteLine($"[Config] Loaded {allowedDirectories.Count} allowed directory path(s).");
                         }
 
                         // Parse allowed websites for Microsoft Edge School Mode

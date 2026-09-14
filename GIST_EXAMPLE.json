@@ -18,6 +18,9 @@
     "CalculatorApp",
     "codeblocks.exe"
   ],
+  "allowedDirectories": [
+    "C:\\Users\\student\\Projects"
+  ],
   "allowedWebsites": [
     "wikipedia.org",
     "nerdvana.ro",
