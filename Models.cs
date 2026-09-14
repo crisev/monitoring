@@ -34,6 +34,7 @@ namespace Monitor
         public Dictionary<string, int> AppSeconds { get; set; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, int> AudioSeconds { get; set; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, int> GameSeconds { get; set; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> KilledProcessCounts { get; set; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         public int RemainingGamingSeconds => Math.Max(0, AvailableGamingSeconds - TotalGamingSeconds);
     }

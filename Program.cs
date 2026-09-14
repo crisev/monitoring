@@ -735,6 +735,14 @@ namespace Monitor
                             Console.WriteLine($"[WHITELIST] Terminating unauthorized process '{procName}' (PID: {proc.Id}, Session: {proc.SessionId}).");
                             proc.Kill(true);
                             NotifyProcessBlocked(procName);
+
+                            // Track kill count for daily reporting
+                            if (currentDailyStats != null)
+                            {
+                                if (!currentDailyStats.KilledProcessCounts.ContainsKey(procName))
+                                    currentDailyStats.KilledProcessCounts[procName] = 0;
+                                currentDailyStats.KilledProcessCounts[procName]++;
+                            }
                             continue;
                         }
 
@@ -2223,7 +2231,8 @@ namespace Monitor
                 GrantedBonusSeconds = 0,
                 AppSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
                 AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
-                GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+                KilledProcessCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
             };
             gameQuotaExceededNotified = false;
             gameTenMinutesWarningNotified = false;
@@ -2320,6 +2329,8 @@ namespace Monitor
                 stats.AudioSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             if (stats.GameSeconds == null)
                 stats.GameSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (stats.KilledProcessCounts == null)
+                stats.KilledProcessCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             if (stats.AvailableGamingSeconds <= 0 && dailyGameTimeMinutes > 0)
                 stats.AvailableGamingSeconds = dailyGameTimeMinutes * 60;
         }
@@ -2563,6 +2574,27 @@ namespace Monitor
                 if (!anyAudio)
                 {
                     sb.AppendLine("- No audio playback recorded today");
+                }
+                sb.AppendLine();
+
+                // Detailed breakdown of Killed Processes (Whitelist enforcement)
+                if (enforcementMode.Equals("whitelist", StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.AppendLine("**🚫 Blocked Processes (Whitelist Kills Today):**");
+                    var sortedKills = currentDailyStats.KilledProcessCounts.OrderByDescending(x => x.Value).ToList();
+                    bool anyKills = false;
+                    foreach (var kill in sortedKills)
+                    {
+                        if (kill.Value > 0)
+                        {
+                            anyKills = true;
+                            sb.AppendLine($"- **{kill.Key}**: terminated {kill.Value}x");
+                        }
+                    }
+                    if (!anyKills)
+                    {
+                        sb.AppendLine("- No unauthorized processes terminated today");
+                    }
                 }
 
                 await SendDiscordChunkedMessageAsync(sb.ToString());

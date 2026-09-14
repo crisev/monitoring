@@ -11,15 +11,11 @@
   "dailyReportIntervalMinutes": 30,
   "allowedProcessNames": [
     "msedge",
-    "WINWORD",
-    "EXCEL",
-    "POWERPNT",
     "Code",
     "notepad",
     "calculator",
     "CalculatorApp",
-    "AcroRd32",
-    "acrobat"
+    "codeblocks.exe"
   ],
   "allowedWebsites": [
     "https://*.wikipedia.org",
