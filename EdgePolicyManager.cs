@@ -207,12 +207,12 @@ namespace Monitor
 
         /// <summary>
         /// Normalizes user-configured website patterns to the standard Chromium URL pattern format
-        /// expected by Microsoft Edge URLAllowlist / URLBlocklist policies:
-        /// - Removes wildcard protocols like 'http*://' or 'https?://' (schemes don't support wildcards)
+        /// expected by Microsoft Edge URLAllowlist / URLBlocklist enterprise policies:
+        /// Syntax: [scheme://][.]host[:port][/path][@query]
+        /// - In Edge URLAllowlist, a bare hostname like 'nerdvana.ro' matches the apex domain AND all subdomains (e.g. education.nerdvana.ro).
+        /// - Removes wildcard protocols like 'http*://' or 'https?://'
+        /// - Strips '[*.]', '[*]', and leading '*.' prefixes (these belong to Chrome content settings, not URLAllowlist policy; Edge discards them as invalid hostname syntax)
         /// - Strips trailing wildcards directly attached to hostnames (e.g. 'google.com*' -> 'google.com')
-        /// - Strips invalid leading wildcards attached directly to words (e.g. '*pbinfo*' -> 'pbinfo.ro')
-        /// - Normalizes '*.domain.com', '.domain.com', or bare domains to '[*.]domain.com' so Edge matches
-        ///   both the apex domain and any subdomain (e.g. wikipedia.org and en.wikipedia.org).
         /// </summary>
         public static string NormalizeUrlPattern(string raw)
         {
@@ -233,47 +233,53 @@ namespace Monitor
                 p = p.Substring(10);
             }
 
-            // 2. Remove trailing asterisk if attached directly to domain name (e.g. "google.com*" -> "google.com")
+            // 2. Strip Chrome Content Settings syntax ('[*.]' or '[*]') from scheme or bare host
+            // Microsoft Edge URLAllowlist / URLBlocklist enterprise policy does NOT support '[*.]'.
+            // In URLAllowlist, specifying 'domain.com' automatically matches 'domain.com' AND all its subdomains!
+            // Having '[*.]' causes Edge to reject the entry as a malformed hostname.
+            if (p.StartsWith("https://[*.]", StringComparison.OrdinalIgnoreCase))
+            {
+                p = "https://" + p.Substring(12);
+            }
+            else if (p.StartsWith("http://[*.]", StringComparison.OrdinalIgnoreCase))
+            {
+                p = "http://" + p.Substring(11);
+            }
+            else if (p.StartsWith("https://*.", StringComparison.OrdinalIgnoreCase))
+            {
+                p = "https://" + p.Substring(10);
+            }
+            else if (p.StartsWith("http://*.", StringComparison.OrdinalIgnoreCase))
+            {
+                p = "http://" + p.Substring(9);
+            }
+            else if (p.StartsWith("[*.]", StringComparison.OrdinalIgnoreCase))
+            {
+                p = p.Substring(4);
+            }
+            else if (p.StartsWith("[*]", StringComparison.OrdinalIgnoreCase))
+            {
+                p = p.Substring(3);
+            }
+            else if (p.StartsWith("*.", StringComparison.OrdinalIgnoreCase))
+            {
+                p = p.Substring(2);
+            }
+
+            // 3. Remove trailing asterisk if attached directly to domain name (e.g. "google.com*" -> "google.com")
             // Preserve if it's an explicit path wildcard (e.g. "domain.com/*")
             if (p.EndsWith("*") && !p.EndsWith("/*"))
             {
                 p = p.TrimEnd('*');
             }
 
-            // 3. Remove leading asterisk if directly attached to name without dot (e.g. "*nerdvana.ro" -> "nerdvana.ro")
+            // 4. Remove leading asterisk if directly attached to name without dot (e.g. "*nerdvana.ro" -> "nerdvana.ro")
             if (p.StartsWith("*") && !p.StartsWith("*."))
             {
                 p = p.TrimStart('*');
             }
 
-            // 4. Transform wildcards to official Chromium format: '[*.]domain.tld'
-            if (p.StartsWith("*."))
-            {
-                p = "[*.]" + p.Substring(2);
-            }
-            else if (p.StartsWith("."))
-            {
-                p = "[*.]" + p.Substring(1);
-            }
-            else if (p.StartsWith("https://*.", StringComparison.OrdinalIgnoreCase))
-            {
-                p = "https://[*.]" + p.Substring(10);
-            }
-            else if (p.StartsWith("http://*.", StringComparison.OrdinalIgnoreCase))
-            {
-                p = "http://[*.]" + p.Substring(9);
-            }
-            else if (!p.Contains("://") && !p.StartsWith("[*.]") && !p.Contains("/"))
-            {
-                // Bare domain like "nerdarena.ro" or "pbinfo.ro" -> expand to '[*.]domain.ro'
-                // so both the apex domain and all subdomains (e.g. www.) are permitted automatically
-                if (p.Contains("."))
-                {
-                    p = "[*.]" + p;
-                }
-            }
-
-            return p;
+            return p.Trim();
         }
 
         private static void SetRegistryDword(string subKeyPath, string valueName, int value)

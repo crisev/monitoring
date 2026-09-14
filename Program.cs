@@ -293,31 +293,26 @@ namespace Monitor
             "SystemSettings",             // Windows Settings app (allows adjusting display/volume/wifi)
             
             // Windows Web & Component Runtime
-            "msedgewebview2",             // Microsoft Edge WebView2 (used by Windows Search, Widgets, modern apps)
+            "msedgewebview2"              // Microsoft Edge WebView2 (used by Windows Search, Widgets, modern apps)
+        };
 
-            // Display & GPU Driver Helpers (terminating these causes screen flicker / GPU driver reset)
-            "igfxEM",
-            "igfxCUIService",
-            "igfxext",
-            "IntelGraphicsSoftware",
-            "nvcontainer",
-            "nvsphelper64",
-            "NVIDIA Share",
-            "nvcplui",
-            "RadeonSoftware",
-            "AMDRSServ",
-
-            // Audio & Peripheral Hardware Drivers
-            "RtkAudUService64",
-            "RtkAudUService",
-            "WavesSvc64",
-            "LogiOptions",
-            "razerhid",
-
-            // Windows System Background Services
-            "backgroundTaskHost",
-            "MoUsoCoreWorker",
-            "USOClient"
+        /// <summary>
+        /// Command shells and scripting engines located in C:\Windows that could be used to bypass monitoring.
+        /// These are NOT automatically exempted by the C:\Windows path check and will be terminated unless
+        /// explicitly added to allowedProcessNames by the parent.
+        /// </summary>
+        private static readonly HashSet<string> ForbiddenWindowsTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "cmd",
+            "powershell",
+            "pwsh",
+            "wscript",
+            "cscript",
+            "mshta",
+            "regedit",
+            "bash",
+            "wsl",
+            "wt"
         };
 
         private static List<string> blockedProcessNames = new List<string> 
@@ -752,6 +747,13 @@ namespace Monitor
                             // 1d. Configured Allowed Applications (e.g. Edge, Word, Notepad, VS Code, codeblocks.exe)
                             if (MatchesProcessName(procName, allowedProcessNames)) continue;
 
+                            // 1e. Generic Windows & Hardware Driver Exemption:
+                            // Automatically permits any authentic binary executing out of C:\Windows (e.g. System32\DriverStore,
+                            // SystemApps, OEM drivers) or privileged system services (Access Denied).
+                            // Deliberately excludes command shells (cmd, powershell, etc.) which remain subject to monitoring.
+                            // This eliminates needing to hardcode PC-specific touchpad/audio/GPU driver names across desktop/laptop!
+                            if (IsExemptWindowsOrDriverProcess(proc)) continue;
+
                             // Process is unauthorized in School Mode -> Terminate immediately
                             Console.WriteLine($"[WHITELIST] Terminating unauthorized process '{procName}' (PID: {proc.Id}, Session: {proc.SessionId}).");
                             proc.Kill(true);
@@ -817,6 +819,61 @@ namespace Monitor
                 File.AppendAllText(logPath, logLine);
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Checks if a process is a legitimate Windows OS component or certified OEM hardware driver
+        /// (e.g. Touchpad, Realtek Audio, Intel/AMD/NVIDIA graphics, Windows 11 SystemApps) by verifying
+        /// its executable path inside C:\Windows, or whether it runs with higher integrity (Access Denied).
+        /// Standard user accounts cannot write to C:\Windows, preventing unauthorized games/apps from using this path.
+        /// </summary>
+        private static bool IsExemptWindowsOrDriverProcess(Process proc)
+        {
+            try
+            {
+                string fullPath = null;
+                try
+                {
+                    fullPath = proc.MainModule?.FileName;
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    // Access Denied: elevated or privileged SYSTEM/Driver service.
+                    // Standard user accounts cannot run games under SYSTEM or elevated integrity.
+                    return true;
+                }
+                catch (InvalidOperationException)
+                {
+                    // Process has already terminated
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+
+                if (string.IsNullOrEmpty(fullPath))
+                {
+                    return false;
+                }
+
+                string systemRoot = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                if (fullPath.StartsWith(systemRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    string fileName = Path.GetFileNameWithoutExtension(fullPath);
+                    // Interactive CLI shells or script engines in C:\Windows are NOT exempted
+                    // (they remain blocked unless explicitly added to allowedProcessNames by the parent)
+                    if (ForbiddenWindowsTools.Contains(fileName))
+                    {
+                        return false;
+                    }
+
+                    return true;
+                }
+            }
+            catch { }
+
+            return false;
         }
 
         /// <summary>
