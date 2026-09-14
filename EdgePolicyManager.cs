@@ -47,6 +47,8 @@ namespace Monitor
         private const string UrlBlocklistSubKey = @"Software\Policies\Microsoft\Edge\URLBlocklist";
         private const string UrlAllowlistSubKey = @"Software\Policies\Microsoft\Edge\URLAllowlist";
         private const string ExtensionBlocklistSubKey = @"Software\Policies\Microsoft\Edge\ExtensionInstallBlocklist";
+        private const string DeveloperToolsAllowlistSubKey = @"Software\Policies\Microsoft\Edge\DeveloperToolsAvailabilityAllowlist";
+        private const string DeveloperToolsBlocklistSubKey = @"Software\Policies\Microsoft\Edge\DeveloperToolsAvailabilityBlocklist";
 
         /// <summary>
         /// Applies School Mode restrictions:
@@ -116,7 +118,8 @@ namespace Monitor
         }
 
         /// <summary>
-        /// Hardens Edge by disabling InPrivate mode and blocking extension installs.
+        /// Hardens Edge by disabling InPrivate mode and blocking extension installs,
+        /// while explicitly allowing Developer Tools (F12, Inspect Element) across all websites.
         /// </summary>
         public static void ApplyBaseEdgeHardening()
         {
@@ -128,6 +131,12 @@ namespace Monitor
 
             // DeveloperToolsAvailability: 1 = Allow developer tools (F12, Inspect Element)
             SetRegistryDword(EdgePolicySubKey, "DeveloperToolsAvailability", 1);
+
+            // DeveloperToolsAvailabilityAllowlist: 1 = "*" (Explicitly permits DevTools on all URLs and frames, overriding default restrictions)
+            SetRegistryMultiValues(DeveloperToolsAllowlistSubKey, new[] { "*" });
+
+            // Ensure DeveloperToolsAvailabilityBlocklist is deleted
+            DeleteRegistrySubKeySafe(DeveloperToolsBlocklistSubKey);
         }
 
         /// <summary>
@@ -200,6 +209,8 @@ namespace Monitor
             DeleteRegistrySubKeySafe(UrlBlocklistSubKey);
             DeleteRegistrySubKeySafe(UrlAllowlistSubKey);
             DeleteRegistrySubKeySafe(ExtensionBlocklistSubKey);
+            DeleteRegistrySubKeySafe(DeveloperToolsAllowlistSubKey);
+            DeleteRegistrySubKeySafe(DeveloperToolsBlocklistSubKey);
             DeleteRegistryValueSafe(EdgePolicySubKey, "InPrivateModeAvailability");
             DeleteRegistryValueSafe(EdgePolicySubKey, "RestoreOnStartup");
             DeleteRegistryValueSafe(EdgePolicySubKey, "DeveloperToolsAvailability");
