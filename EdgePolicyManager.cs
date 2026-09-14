@@ -66,8 +66,14 @@ namespace Monitor
                 // Apply URLBlocklist = ["*"] to block all websites by default
                 SetRegistryMultiValues(UrlBlocklistSubKey, new[] { "*" });
 
-                // Apply URLAllowlist with permitted websites from configuration
-                var siteList = allowedWebsites?.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().ToList() ?? new List<string>();
+                // Apply URLAllowlist with permitted websites from configuration (normalized to Chromium URL pattern syntax)
+                var siteList = allowedWebsites?
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(NormalizeUrlPattern)
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList() ?? new List<string>();
+
                 SetRegistryMultiValues(UrlAllowlistSubKey, siteList);
 
                 // RestoreOnStartup: 5 = Open New Tab Page (cleans session restore so blocked tabs are not reloaded)
@@ -118,6 +124,9 @@ namespace Monitor
 
             // ExtensionInstallBlocklist: 1 = "*" (Block all extension installations)
             SetRegistryMultiValues(ExtensionBlocklistSubKey, new[] { "*" });
+
+            // DeveloperToolsAvailability: 1 = Allow developer tools (F12, Inspect Element)
+            SetRegistryDword(EdgePolicySubKey, "DeveloperToolsAvailability", 1);
         }
 
         /// <summary>
@@ -192,7 +201,79 @@ namespace Monitor
             DeleteRegistrySubKeySafe(ExtensionBlocklistSubKey);
             DeleteRegistryValueSafe(EdgePolicySubKey, "InPrivateModeAvailability");
             DeleteRegistryValueSafe(EdgePolicySubKey, "RestoreOnStartup");
+            DeleteRegistryValueSafe(EdgePolicySubKey, "DeveloperToolsAvailability");
             Console.WriteLine("[EdgePolicyManager] Cleared all Edge policies.");
+        }
+
+        /// <summary>
+        /// Normalizes user-configured website patterns to the standard Chromium URL pattern format
+        /// expected by Microsoft Edge URLAllowlist / URLBlocklist policies:
+        /// - Removes wildcard protocols like 'http*://' or 'https?://' (schemes don't support wildcards)
+        /// - Strips trailing wildcards directly attached to hostnames (e.g. 'google.com*' -> 'google.com')
+        /// - Strips invalid leading wildcards attached directly to words (e.g. '*pbinfo*' -> 'pbinfo.ro')
+        /// - Normalizes '*.domain.com', '.domain.com', or bare domains to '[*.]domain.com' so Edge matches
+        ///   both the apex domain and any subdomain (e.g. wikipedia.org and en.wikipedia.org).
+        /// </summary>
+        public static string NormalizeUrlPattern(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+            string p = raw.Trim();
+
+            // 1. Strip wildcard / regex protocol prefixes (Chromium scheme must be exact or omitted)
+            if (p.StartsWith("http*://", StringComparison.OrdinalIgnoreCase))
+            {
+                p = p.Substring(8);
+            }
+            else if (p.StartsWith("https*://", StringComparison.OrdinalIgnoreCase))
+            {
+                p = p.Substring(9);
+            }
+            else if (p.StartsWith("https?://", StringComparison.OrdinalIgnoreCase))
+            {
+                p = p.Substring(10);
+            }
+
+            // 2. Remove trailing asterisk if attached directly to domain name (e.g. "google.com*" -> "google.com")
+            // Preserve if it's an explicit path wildcard (e.g. "domain.com/*")
+            if (p.EndsWith("*") && !p.EndsWith("/*"))
+            {
+                p = p.TrimEnd('*');
+            }
+
+            // 3. Remove leading asterisk if directly attached to name without dot (e.g. "*nerdvana.ro" -> "nerdvana.ro")
+            if (p.StartsWith("*") && !p.StartsWith("*."))
+            {
+                p = p.TrimStart('*');
+            }
+
+            // 4. Transform wildcards to official Chromium format: '[*.]domain.tld'
+            if (p.StartsWith("*."))
+            {
+                p = "[*.]" + p.Substring(2);
+            }
+            else if (p.StartsWith("."))
+            {
+                p = "[*.]" + p.Substring(1);
+            }
+            else if (p.StartsWith("https://*.", StringComparison.OrdinalIgnoreCase))
+            {
+                p = "https://[*.]" + p.Substring(10);
+            }
+            else if (p.StartsWith("http://*.", StringComparison.OrdinalIgnoreCase))
+            {
+                p = "http://[*.]" + p.Substring(9);
+            }
+            else if (!p.Contains("://") && !p.StartsWith("[*.]") && !p.Contains("/"))
+            {
+                // Bare domain like "nerdarena.ro" or "pbinfo.ro" -> expand to '[*.]domain.ro'
+                // so both the apex domain and all subdomains (e.g. www.) are permitted automatically
+                if (p.Contains("."))
+                {
+                    p = "[*.]" + p;
+                }
+            }
+
+            return p;
         }
 
         private static void SetRegistryDword(string subKeyPath, string valueName, int value)

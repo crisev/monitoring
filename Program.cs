@@ -258,6 +258,7 @@ namespace Monitor
         {
             // Windows Core Shell, Taskbar & Desktop Rendering
             "explorer",                   // Windows Desktop shell, taskbar, start menu, and file browser
+            "explorer.exe",
             "sihost",                     // Shell Infrastructure Host (action center, notifications, tray)
             "taskhostw",                  // Host Process for Windows Tasks in user session
             "ctfmon",                     // CTF Loader (Text Services Framework, keyboard inputs, language bar)
@@ -716,10 +717,10 @@ namespace Monitor
                             if (proc.Id == currentPid || procName.Equals(currentProcName, StringComparison.OrdinalIgnoreCase)) continue;
 
                             // 1c. Base Windows Whitelist: Essential Windows GUI, Desktop shell & input components
-                            if (BaseWindowsProcesses.Contains(procName)) continue;
+                            if (MatchesProcessName(procName, BaseWindowsProcesses)) continue;
 
-                            // 1d. Configured Allowed Applications (e.g. Edge, Word, Notepad, VS Code)
-                            if (allowedProcessNames.Contains(procName, StringComparer.OrdinalIgnoreCase)) continue;
+                            // 1d. Configured Allowed Applications (e.g. Edge, Word, Notepad, VS Code, codeblocks.exe)
+                            if (MatchesProcessName(procName, allowedProcessNames)) continue;
 
                             // Process is unauthorized in School Mode -> Terminate immediately
                             Console.WriteLine($"[WHITELIST] Terminating unauthorized process '{procName}' (PID: {proc.Id}, Session: {proc.SessionId}).");
@@ -740,7 +741,7 @@ namespace Monitor
                         // =========================================================================
                         bool isBlocked = false;
 
-                        if (blockedProcessNames.Contains(procName, StringComparer.OrdinalIgnoreCase))
+                        if (MatchesProcessName(procName, blockedProcessNames))
                         {
                             Console.WriteLine($"BLOCKED: Process '{procName}' is forbidden - killing.");
                             proc.Kill(true);
@@ -774,6 +775,30 @@ namespace Monitor
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Compares a process name against a list of target names in a case-insensitive and .exe-agnostic manner.
+        /// Handles 'proc' vs 'proc.exe' seamlessly.
+        /// </summary>
+        private static bool MatchesProcessName(string procName, IEnumerable<string> targetList)
+        {
+            if (string.IsNullOrEmpty(procName) || targetList == null) return false;
+            string cleanProc = procName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                ? procName.Substring(0, procName.Length - 4)
+                : procName;
+
+            foreach (var item in targetList)
+            {
+                if (string.IsNullOrEmpty(item)) continue;
+                string cleanItem = item.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                    ? item.Substring(0, item.Length - 4)
+                    : item;
+
+                if (cleanProc.Equals(cleanItem, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
         }
 
         private static async Task InitiateContinuousShutdownAsync(string reason)

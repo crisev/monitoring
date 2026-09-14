@@ -19,11 +19,11 @@
     "codeblocks.exe"
   ],
   "allowedWebsites": [
-    "http*://*.wikipedia.org*",
-    "http*://*nerdvana*",
-    "http*://*pbinfo*",
-    "http*://*nerdarena.ro*",
-    "http*://*.google.com*"
+    "[*.]wikipedia.org",
+    "[*.]nerdvana.ro",
+    "[*.]pbinfo.ro",
+    "[*.]nerdarena.ro",
+    "[*.]google.com"
   ],
   "bonusMinutes": {
     "date": "2026-09-13",
