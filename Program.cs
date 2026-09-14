@@ -295,22 +295,6 @@ namespace Monitor
             "msedgewebview2"              // Microsoft Edge WebView2 (used by Windows Search, Widgets, modern apps)
         };
 
-        private static readonly Dictionary<string, DateTime> recentlyBlockedNotifications = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-
-        private static void NotifyProcessBlocked(string procName)
-        {
-            DateTime now = DateTime.UtcNow;
-            if (!recentlyBlockedNotifications.TryGetValue(procName, out var lastTime) || (now - lastTime).TotalSeconds >= 45)
-            {
-                recentlyBlockedNotifications[procName] = now;
-                TrayService.Instance?.ShowNotification(
-                    "School Mode Active",
-                    $"'{procName}' is not on the approved school application list.\nSwitch to Gaming Mode if you wish to play.",
-                    ToolTipIcon.Warning
-                );
-            }
-        }
-
         private static List<string> blockedProcessNames = new List<string> 
         { 
             "duckduckgo",
@@ -698,6 +682,12 @@ namespace Monitor
         {
             try
             {
+                // Never terminate any processes when running as an Administrator
+                if (isAdminUser)
+                {
+                    return;
+                }
+
                 // In Gaming Mode, whitelist restrictions are paused to allow approved gaming activity
                 if (isGamingModeActive)
                 {
@@ -734,7 +724,6 @@ namespace Monitor
                             // Process is unauthorized in School Mode -> Terminate immediately
                             Console.WriteLine($"[WHITELIST] Terminating unauthorized process '{procName}' (PID: {proc.Id}, Session: {proc.SessionId}).");
                             proc.Kill(true);
-                            NotifyProcessBlocked(procName);
 
                             // Track kill count for daily reporting
                             if (currentDailyStats != null)
@@ -789,6 +778,12 @@ namespace Monitor
 
         private static async Task InitiateContinuousShutdownAsync(string reason)
         {
+            if (isAdminUser)
+            {
+                Console.WriteLine($"[Admin] Shutdown bypassed for reason '{reason}'.");
+                return;
+            }
+
             Console.WriteLine($"Initiating continuous shutdown sequence: {reason}");
             try
             {
@@ -982,6 +977,14 @@ namespace Monitor
             if (isAdminUser)
             {
                 Console.WriteLine("[Admin] Current user is a member of the Administrators group. All restrictions and monitoring are disabled.");
+                try
+                {
+                    EdgePolicyManager.ClearAllPolicies();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Admin] Note: Could not clear Edge policies: {ex.Message}");
+                }
             }
 
             // Hide or allocate console window depending on --visible, isDebugMode, noShutdown or forceUpdate
@@ -1751,6 +1754,11 @@ namespace Monitor
 
         private static async Task SendDiscordNotificationAsync(string messageText)
         {
+            if (isAdminUser)
+            {
+                return;
+            }
+
             try
             {
                 var payload = new { content = messageText };
@@ -1801,6 +1809,11 @@ namespace Monitor
 
         private static async Task CaptureAndSendScreenshotAsync()
         {
+            if (isAdminUser)
+            {
+                return;
+            }
+
             try
             {
                 int width = GetSystemMetrics(SM_CXSCREEN);
@@ -2408,6 +2421,11 @@ namespace Monitor
 
         private static async Task SendDiscordChunkedMessageAsync(string fullMessage)
         {
+            if (isAdminUser)
+            {
+                return;
+            }
+
             if (string.IsNullOrEmpty(fullMessage)) return;
 
             if (fullMessage.Length <= 1900)
@@ -2453,6 +2471,11 @@ namespace Monitor
 
         private static async Task SendDailyReportAsync()
         {
+            if (isAdminUser)
+            {
+                return;
+            }
+
             try
             {
                 EnsureCurrentDayStats();
@@ -2608,7 +2631,7 @@ namespace Monitor
 
         /// <summary>
         /// Checks whether the current Windows user account is a member of the BUILTIN\Administrators group.
-        /// This checks group membership, NOT elevation — an admin user running without UAC elevation still returns true.
+        /// Works for both elevated (Run as Administrator) and non-elevated (UAC standard filtered token) processes.
         /// </summary>
         private static bool IsCurrentUserAdmin()
         {
@@ -2616,14 +2639,41 @@ namespace Monitor
             {
                 using (var identity = WindowsIdentity.GetCurrent())
                 {
+                    // 1. Direct role check (works when process is already elevated)
                     var principal = new WindowsPrincipal(identity);
-                    return principal.IsInRole(WindowsBuiltInRole.Administrator);
+                    if (principal.IsInRole(WindowsBuiltInRole.Administrator))
+                    {
+                        return true;
+                    }
+
+                    // 2. Token claims check for Administrators SID (S-1-5-32-544) and well-known admin SIDs.
+                    // When running non-elevated under UAC, Windows marks the Administrators SID as a deny-only SID.
+                    // .NET includes this in identity.Claims (as ClaimTypes.DenyOnlySid).
+                    // Standard users who do NOT belong to Administrators never have this SID in their token claims.
+                    var adminSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+                    if (identity.Claims != null && identity.Claims.Any(c =>
+                        c.Value.Equals(adminSid.Value, StringComparison.OrdinalIgnoreCase) ||
+                        c.Value.Equals("S-1-5-32-544", StringComparison.OrdinalIgnoreCase) ||
+                        c.Value.EndsWith("-500") || c.Value.EndsWith("-512") || c.Value.EndsWith("-519")))
+                    {
+                        return true;
+                    }
+
+                    // 3. Fallback check on identity.Groups
+                    if (identity.Groups != null && identity.Groups.Any(g =>
+                        g.Value.Equals(adminSid.Value, StringComparison.OrdinalIgnoreCase) ||
+                        g.Value.Equals("S-1-5-32-544", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return true;
+                    }
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                return false;
+                Console.WriteLine($"[AdminCheck] Error detecting admin status: {ex.Message}");
             }
+
+            return false;
         }
 
         private static void ProtectProcess()

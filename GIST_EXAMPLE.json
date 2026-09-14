@@ -11,6 +11,7 @@
   "dailyReportIntervalMinutes": 30,
   "allowedProcessNames": [
     "msedge",
+    "WINWORD",
     "Code",
     "notepad",
     "calculator",
@@ -18,11 +19,11 @@
     "codeblocks.exe"
   ],
   "allowedWebsites": [
-    "https://*.wikipedia.org",
-    "https://classroom.google.com",
-    "https://*.khanacademy.org",
-    "https://*.duolingo.com",
-    "https://translate.google.com"
+    "http*://*.wikipedia.org*",
+    "http*://*nerdvana*",
+    "http*://*pbinfo*",
+    "http*://*nerdarena.ro*",
+    "http*://*.google.com*"
   ],
   "bonusMinutes": {
     "date": "2026-09-13",
