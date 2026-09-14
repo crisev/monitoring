@@ -405,11 +405,6 @@ namespace Monitor
             "devenv"           // Visual Studio
         };
 
-        /// <summary>
-        /// Optional project/workspace directories configured via Gist where any compiled program is allowed.
-        /// </summary>
-        private static List<string> allowedDirectories = new List<string>();
-
         private static List<string> blockedProcessNames = new List<string> 
         { 
             "duckduckgo",
@@ -863,9 +858,6 @@ namespace Monitor
                             // 1g. Child Process of Allowed IDE (Compiled student programs launched by Code::Blocks or VS Code)
                             if (IsSpawnedByAllowedIDE(proc.Id, parentMap, nameMap)) continue;
 
-                            // 1h. Configured Allowed Project Directories (e.g. C:\Users\student\Projects)
-                            if (IsInAllowedDirectory(proc)) continue;
-
                             // Process is unauthorized in School Mode -> Terminate immediately
                             Console.WriteLine($"[WHITELIST] Terminating unauthorized process '{procName}' (PID: {proc.Id}, Session: {proc.SessionId}).");
                             proc.Kill(true);
@@ -1125,33 +1117,6 @@ namespace Monitor
 
                 currentPid = parentPid;
             }
-            return false;
-        }
-
-        /// <summary>
-        /// Checks if a process executable resides inside an explicitly configured allowed project directory.
-        /// </summary>
-        private static bool IsInAllowedDirectory(Process proc)
-        {
-            if (allowedDirectories == null || allowedDirectories.Count == 0) return false;
-
-            try
-            {
-                string fullPath = null;
-                try { fullPath = proc.MainModule?.FileName; } catch { }
-                if (string.IsNullOrEmpty(fullPath)) return false;
-
-                foreach (var dir in allowedDirectories)
-                {
-                    if (string.IsNullOrWhiteSpace(dir)) continue;
-                    if (fullPath.StartsWith(dir.Trim(), StringComparison.OrdinalIgnoreCase))
-                    {
-                        return true;
-                    }
-                }
-            }
-            catch { }
-
             return false;
         }
 
@@ -1917,16 +1882,6 @@ namespace Monitor
                                 .Where(x => !string.IsNullOrEmpty(x))
                                 .ToList();
                             Console.WriteLine($"[Config] Loaded {allowedProcessNames.Count} allowed process name(s).");
-                        }
-
-                        // Parse optional allowed directories (e.g. coding project workspaces)
-                        if (root.TryGetProperty("allowedDirectories", out var allowedDirsElement))
-                        {
-                            allowedDirectories = allowedDirsElement.EnumerateArray()
-                                .Select(x => x.GetString())
-                                .Where(x => !string.IsNullOrEmpty(x))
-                                .ToList();
-                            Console.WriteLine($"[Config] Loaded {allowedDirectories.Count} allowed directory path(s).");
                         }
 
                         // Parse allowed websites for Microsoft Edge School Mode
