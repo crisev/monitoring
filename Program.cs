@@ -293,7 +293,24 @@ namespace Monitor
             "SystemSettings",             // Windows Settings app (allows adjusting display/volume/wifi)
             
             // Windows Web & Component Runtime
-            "msedgewebview2"              // Microsoft Edge WebView2 (used by Windows Search, Widgets, modern apps)
+            "msedgewebview2",             // Microsoft Edge WebView2 (used by Windows Search, Widgets, modern apps)
+
+            // Windows Logon & Shell Lifecycle (CRITICAL: Killing userinit restarts logon and loops shell endlessly)
+            "userinit",                   // Windows User Initialization (launches explorer at logon)
+            "rundll32",                   // Windows Run DLL host (used by control panels and display initialization)
+
+            // Windows 11 Taskbar Widgets & Shell Feeds (CRITICAL: Killing WidgetBoard crashes/restarts taskbar)
+            "WidgetBoard",                // Windows 11 Taskbar Widgets board
+            "WidgetService",              // Windows 11 Taskbar Widgets service
+            "MicrosoftStartFeedProvider", // Windows 11 Start Feed provider
+            "FileCoAuth",                 // Microsoft OneDrive / Office file co-authoring synchronization
+
+            // System Sync & Cross-Device Services
+            "mobsync",                    // Windows Sync Center
+            "SearchProtocolHost",         // Windows Search indexing protocol host
+            "CrossDeviceService",         // Windows 11 Phone Link / Cross-device service
+            "CrossDeviceResume",          // Windows 11 Cross-device resume
+            "PhoneExperienceHost"         // Windows 11 Phone Link host
         };
 
         /// <summary>
@@ -821,11 +838,26 @@ namespace Monitor
             catch { }
         }
 
+        private static readonly string[] AllowedHardwareVendorSubfolders = new[]
+        {
+            "NVIDIA Corporation",
+            "Realtek",
+            "Intel",
+            "ASUS",
+            "Lenovo",
+            "Dell",
+            "HP",
+            "Nahimic",
+            "Synaptics",
+            "ELAN"
+        };
+
         /// <summary>
-        /// Checks if a process is a legitimate Windows OS component or certified OEM hardware driver
+        /// Checks if a process is a legitimate Windows OS component, system package, or certified OEM hardware driver
         /// (e.g. Touchpad, Realtek Audio, Intel/AMD/NVIDIA graphics, Windows 11 SystemApps) by verifying
-        /// its executable path inside C:\Windows, or whether it runs with higher integrity (Access Denied).
-        /// Standard user accounts cannot write to C:\Windows, preventing unauthorized games/apps from using this path.
+        /// its executable path inside C:\Windows, OEM hardware folders in Program Files, or whether it runs
+        /// with higher integrity (Access Denied).
+        /// Standard user accounts cannot write to these paths, preventing unauthorized games/apps from using them.
         /// </summary>
         private static bool IsExemptWindowsOrDriverProcess(Process proc)
         {
@@ -857,6 +889,7 @@ namespace Monitor
                     return false;
                 }
 
+                // 1. Windows Directory (System32, SysWOW64, SystemApps, DriverStore)
                 string systemRoot = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
                 if (fullPath.StartsWith(systemRoot, StringComparison.OrdinalIgnoreCase))
                 {
@@ -869,6 +902,34 @@ namespace Monitor
                     }
 
                     return true;
+                }
+
+                // 2. OEM Hardware & Driver folders in Program Files / Program Files (x86)
+                // Covers GPU helpers (NVIDIA, Intel, AMD), laptop hotkey utilities (ASUS, Lenovo, Dell, HP),
+                // and audio/touchpad drivers (Realtek, Nahimic, Synaptics, ELAN).
+                string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                string pfx86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+                foreach (var vendor in AllowedHardwareVendorSubfolders)
+                {
+                    if (fullPath.StartsWith(Path.Combine(pf, vendor), StringComparison.OrdinalIgnoreCase) ||
+                        (!string.IsNullOrEmpty(pfx86) && fullPath.StartsWith(Path.Combine(pfx86, vendor), StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return true;
+                    }
+                }
+
+                // 3. Windows 11 Taskbar & System Experience packages in C:\Program Files\WindowsApps
+                string windowsApps = Path.Combine(pf, "WindowsApps");
+                if (fullPath.StartsWith(windowsApps, StringComparison.OrdinalIgnoreCase))
+                {
+                    string relative = fullPath.Substring(windowsApps.Length).TrimStart(Path.DirectorySeparatorChar);
+                    if (relative.StartsWith("MicrosoftWindows.Client.", StringComparison.OrdinalIgnoreCase) ||
+                        relative.StartsWith("Microsoft.Widgets", StringComparison.OrdinalIgnoreCase) ||
+                        relative.StartsWith("Microsoft.StartExperiencesApp", StringComparison.OrdinalIgnoreCase) ||
+                        relative.StartsWith("MicrosoftWindows.CrossDevice", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
                 }
             }
             catch { }
