@@ -1166,12 +1166,22 @@ namespace Monitor
                 Console.WriteLine("[Admin] Current user is a member of the Administrators group. All restrictions and monitoring are disabled.");
                 try
                 {
+                    // Grant standard users permissions to manage Edge policy subkeys and clear policies for admin session
+                    EdgePolicyManager.EnsurePolicyPermissions();
                     EdgePolicyManager.ClearAllPolicies();
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[Admin] Note: Could not clear Edge policies: {ex.Message}");
                 }
+            }
+            else
+            {
+                try
+                {
+                    EdgePolicyManager.EnsurePolicyPermissions();
+                }
+                catch { }
             }
 
             // Hide or allocate console window depending on --visible, isDebugMode, noShutdown or forceUpdate

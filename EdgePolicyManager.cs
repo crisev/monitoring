@@ -99,9 +99,10 @@ namespace Monitor
             {
                 ApplyBaseEdgeHardening();
 
-                // Remove website blocking so games / web platforms can load
-                DeleteRegistrySubKeySafe(UrlBlocklistSubKey);
-                DeleteRegistrySubKeySafe(UrlAllowlistSubKey);
+                // Clear website blocking entries so user can browse freely during gaming sessions
+                // We clear the values rather than deleting the subkeys to preserve subkey ACLs and permissions
+                ClearRegistryValuesSafe(UrlBlocklistSubKey);
+                ClearRegistryValuesSafe(UrlAllowlistSubKey);
 
                 // Lift RestoreOnStartup restriction
                 DeleteRegistryValueSafe(EdgePolicySubKey, "RestoreOnStartup");
@@ -310,6 +311,20 @@ namespace Monitor
             TryWriteRegistry(Registry.LocalMachine, subKeyPath, writeAction);
         }
 
+        private static void ClearRegistryValuesSafe(string subKeyPath)
+        {
+            Action<RegistryKey> clearAction = key =>
+            {
+                foreach (var vName in key.GetValueNames())
+                {
+                    key.DeleteValue(vName, false);
+                }
+            };
+
+            TryWriteRegistry(Registry.CurrentUser, subKeyPath, clearAction);
+            TryWriteRegistry(Registry.LocalMachine, subKeyPath, clearAction);
+        }
+
         private static void DeleteRegistrySubKeySafe(string subKeyPath)
         {
             TryDeleteSubKey(Registry.CurrentUser, subKeyPath);
@@ -326,6 +341,17 @@ namespace Monitor
         {
             try
             {
+                // 1. Try opening existing key with write access first (avoids needing create permissions on parent)
+                using (RegistryKey existingKey = root.OpenSubKey(subKeyPath, true))
+                {
+                    if (existingKey != null)
+                    {
+                        action(existingKey);
+                        return;
+                    }
+                }
+
+                // 2. If key doesn't exist yet, attempt to create it
                 using (RegistryKey key = root.CreateSubKey(subKeyPath))
                 {
                     if (key != null)
@@ -342,6 +368,51 @@ namespace Monitor
             {
                 Console.WriteLine($"[EdgePolicyManager] Notice ({root.Name}\\{subKeyPath}): {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Ensures Edge policy registry keys exist under HKLM and HKCU, and if running with administrator
+        /// privileges, grants FullControl permissions to BUILTIN\Users and Interactive User with inheritance.
+        /// This allows the standard user monitoring session to dynamically manage allowlists/blocklists.
+        /// </summary>
+        public static void EnsurePolicyPermissions()
+        {
+            GrantKeyPermissions(Registry.LocalMachine, EdgePolicySubKey);
+            GrantKeyPermissions(Registry.CurrentUser, EdgePolicySubKey);
+        }
+
+        private static void GrantKeyPermissions(RegistryKey root, string subKeyPath)
+        {
+            try
+            {
+                using (RegistryKey key = root.CreateSubKey(subKeyPath, RegistryKeyPermissionCheck.ReadWriteSubTree))
+                {
+                    if (key != null)
+                    {
+                        var acl = key.GetAccessControl();
+                        var sidUsers = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, null);
+                        var ruleUsers = new System.Security.AccessControl.RegistryAccessRule(
+                            sidUsers,
+                            System.Security.AccessControl.RegistryRights.FullControl,
+                            System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+                            System.Security.AccessControl.PropagationFlags.None,
+                            System.Security.AccessControl.AccessControlType.Allow);
+                        acl.AddAccessRule(ruleUsers);
+
+                        var sidInteractive = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.InteractiveSid, null);
+                        var ruleInteractive = new System.Security.AccessControl.RegistryAccessRule(
+                            sidInteractive,
+                            System.Security.AccessControl.RegistryRights.FullControl,
+                            System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+                            System.Security.AccessControl.PropagationFlags.None,
+                            System.Security.AccessControl.AccessControlType.Allow);
+                        acl.AddAccessRule(ruleInteractive);
+
+                        key.SetAccessControl(acl);
+                    }
+                }
+            }
+            catch { }
         }
 
         private static void TryDeleteSubKey(RegistryKey root, string subKeyPath)
