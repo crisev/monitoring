@@ -65,16 +65,24 @@ namespace Monitor
                 // Enforce browser hardening (disable InPrivate and extension installation)
                 ApplyBaseEdgeHardening();
 
-                // Apply URLBlocklist = ["*"] to block all websites by default
-                SetRegistryMultiValues(UrlBlocklistSubKey, new[] { "*" });
+                // Apply URLBlocklist = ["*", "edge://surf"] to block all external websites by default and the built-in surf game
+                SetRegistryMultiValues(UrlBlocklistSubKey, new[] { "*", "edge://surf" });
 
-                // Apply URLAllowlist with permitted websites from configuration (normalized to Chromium URL pattern syntax)
-                var siteList = allowedWebsites?
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                    .Select(NormalizeUrlPattern)
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList() ?? new List<string>();
+                // Internal browser schemes essential for Edge functionality:
+                // - edge://* allows settings (edge://settings), history (edge://history / Ctrl-H), downloads (edge://downloads / Ctrl-J), favorites, new tab page, etc.
+                // - devtools://* allows Developer Tools inspection window / panels (F12, Inspect Element)
+                // - chrome://* allows internal compatibility redirects to edge:// pages
+                var siteList = new List<string> { "edge://*", "devtools://*", "chrome://*" };
+
+                if (allowedWebsites != null)
+                {
+                    siteList.AddRange(allowedWebsites
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                        .Select(NormalizeUrlPattern)
+                        .Where(s => !string.IsNullOrWhiteSpace(s)));
+                }
+
+                siteList = siteList.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
                 SetRegistryMultiValues(UrlAllowlistSubKey, siteList);
 
@@ -230,6 +238,14 @@ namespace Monitor
         {
             if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
             string p = raw.Trim();
+
+            // Internal browser schemes should be preserved as-is (e.g. edge://*, devtools://*, chrome://*)
+            if (p.StartsWith("edge://", StringComparison.OrdinalIgnoreCase) ||
+                p.StartsWith("devtools://", StringComparison.OrdinalIgnoreCase) ||
+                p.StartsWith("chrome://", StringComparison.OrdinalIgnoreCase))
+            {
+                return p;
+            }
 
             // 1. Strip wildcard / regex protocol prefixes (Chromium scheme must be exact or omitted)
             if (p.StartsWith("http*://", StringComparison.OrdinalIgnoreCase))

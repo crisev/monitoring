@@ -339,26 +339,34 @@ namespace Monitor
             "SearchProtocolHost",         // Windows Search indexing protocol host
             "CrossDeviceService",         // Windows 11 Phone Link / Cross-device service
             "CrossDeviceResume",          // Windows 11 Cross-device resume
-            "PhoneExperienceHost"         // Windows 11 Phone Link host
+            "PhoneExperienceHost",        // Windows 11 Phone Link host
+
+            // Console, Command Prompts & Terminals
+            "cmd",                        // Windows Command Prompt
+            "cmd.exe",
+            "powershell",                 // Windows PowerShell 5.1
+            "powershell.exe",
+            "pwsh",                       // PowerShell Core 7+
+            "pwsh.exe",
+            "wt",                         // Windows Terminal
+            "wt.exe",
+            "WindowsTerminal",            // Windows Terminal process name
+            "OpenConsole"                 // Windows Terminal console host
         };
 
         /// <summary>
-        /// Command shells and scripting engines located in C:\Windows that could be used to bypass monitoring.
+        /// Scripting engines and registry tools located in C:\Windows that could be used to bypass monitoring.
         /// These are NOT automatically exempted by the C:\Windows path check and will be terminated unless
         /// explicitly added to allowedProcessNames by the parent.
         /// </summary>
         private static readonly HashSet<string> ForbiddenWindowsTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "cmd",
-            "powershell",
-            "pwsh",
             "wscript",
             "cscript",
             "mshta",
             "regedit",
             "bash",
-            "wsl",
-            "wt"
+            "wsl"
         };
 
         /// <summary>
