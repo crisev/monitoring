@@ -445,7 +445,13 @@ namespace Monitor
             "CRYZEN",
             "Poki",
             "Infinite Craft",
-            "ZOMBS.io"
+            "ZOMBS.io",
+            "Play Snake",
+            "Play PAC-MAN",
+            "Google Doodles",
+            "Play Solitaire",
+            "Play Minesweeper",
+            "Play Tic-tac-toe"
         };
 
         private static void ApplyWindowsTimeRegistryRestrictions()

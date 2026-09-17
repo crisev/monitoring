@@ -65,8 +65,21 @@ namespace Monitor
                 // Enforce browser hardening (disable InPrivate and extension installation)
                 ApplyBaseEdgeHardening();
 
-                // Apply URLBlocklist = ["*", "edge://surf"] to block all external websites by default and the built-in surf game
-                SetRegistryMultiValues(UrlBlocklistSubKey, new[] { "*", "edge://surf" });
+                // Apply URLBlocklist to block all external websites, built-in Edge games, and Google embedded minigames:
+                // - "*" blocks all websites not in allowlist
+                // - "edge://surf" blocks Edge's offline surf game
+                // - "*google.com/fbx*" blocks Google's embedded game container (Snake, PAC-MAN, Solitaire, Minesweeper, Tic-Tac-Toe)
+                // - "*google.com/doodles*" blocks Google Doodles game archive
+                // - "*google.com/logos/*" blocks interactive logo games
+                var blockList = new[]
+                {
+                    "*",
+                    "edge://surf",
+                    "*google.com/fbx*",
+                    "*google.com/doodles*",
+                    "*google.com/logos/*"
+                };
+                SetRegistryMultiValues(UrlBlocklistSubKey, blockList);
 
                 // Internal browser schemes essential for Edge functionality:
                 // - edge://* allows settings (edge://settings), history (edge://history / Ctrl-H), downloads (edge://downloads / Ctrl-J), favorites, new tab page, etc.
