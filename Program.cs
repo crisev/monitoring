@@ -197,6 +197,12 @@ namespace Monitor
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool CloseHandle(IntPtr hObject);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint processAccess, bool bInheritHandle, int processId);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool QueryFullProcessImageName(IntPtr hProcess, int dwFlags, StringBuilder lpExeName, ref int lpdwSize);
+
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
         private struct PROCESSENTRY32
         {
@@ -428,6 +434,8 @@ namespace Monitor
             "Grapples Galore",
             "AimLab_tb",
             "FortniteClient-Win64-Shipping",
+            "RocketLeague",
+            "RocketLeague_EAC",
             "chrome",
             "GeometryDash",
             "RobloxPlayerBeta" 
@@ -874,15 +882,17 @@ namespace Monitor
 
                             // Process is unauthorized in School Mode -> Terminate immediately
                             Console.WriteLine($"[WHITELIST] Terminating unauthorized process '{procName}' (PID: {proc.Id}, Session: {proc.SessionId}).");
-                            proc.Kill(true);
-                            LogProcessKill(procName, proc.Id, proc.SessionId);
-
-                            // Track kill count for daily reporting
-                            if (currentDailyStats != null)
+                            if (TryKillProcess(proc))
                             {
-                                if (!currentDailyStats.KilledProcessCounts.ContainsKey(procName))
-                                    currentDailyStats.KilledProcessCounts[procName] = 0;
-                                currentDailyStats.KilledProcessCounts[procName]++;
+                                LogProcessKill(procName, proc.Id, proc.SessionId);
+
+                                // Track kill count for daily reporting
+                                if (currentDailyStats != null)
+                                {
+                                    if (!currentDailyStats.KilledProcessCounts.ContainsKey(procName))
+                                        currentDailyStats.KilledProcessCounts[procName] = 0;
+                                    currentDailyStats.KilledProcessCounts[procName]++;
+                                }
                             }
                             continue;
                         }
@@ -895,7 +905,7 @@ namespace Monitor
                         if (MatchesProcessName(procName, blockedProcessNames))
                         {
                             Console.WriteLine($"BLOCKED: Process '{procName}' is forbidden - killing.");
-                            proc.Kill(true);
+                            TryKillProcess(proc);
                             isBlocked = true;
                         }
 
@@ -915,7 +925,7 @@ namespace Monitor
                                     if (mainTitle.Contains(keyword, StringComparison.OrdinalIgnoreCase))
                                     {
                                         Console.WriteLine($"BLOCKED: Title '{mainTitle}' contains keyword '{keyword}' - killing process '{procName}'.");
-                                        proc.Kill(true);
+                                        TryKillProcess(proc);
                                         break;
                                     }
                                 }
@@ -953,40 +963,103 @@ namespace Monitor
             "ELAN"
         };
 
+        private static string GetProcessExecutablePath(Process proc)
+        {
+            try
+            {
+                string path = proc.MainModule?.FileName;
+                if (!string.IsNullOrEmpty(path)) return path;
+            }
+            catch { }
+
+            try
+            {
+                // Fallback to QueryFullProcessImageName with PROCESS_QUERY_LIMITED_INFORMATION (0x1000)
+                // This succeeds on protected / anti-cheat processes where MainModule is blocked
+                IntPtr hProc = OpenProcess(0x1000, false, proc.Id);
+                if (hProc != IntPtr.Zero)
+                {
+                    try
+                    {
+                        var sb = new StringBuilder(1024);
+                        int size = sb.Capacity;
+                        if (QueryFullProcessImageName(hProc, 0, sb, ref size))
+                        {
+                            return sb.ToString();
+                        }
+                    }
+                    finally
+                    {
+                        CloseHandle(hProc);
+                    }
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        private static bool TryKillProcess(Process proc)
+        {
+            try
+            {
+                proc.Kill(true);
+                return true;
+            }
+            catch
+            {
+                try
+                {
+                    proc.Kill();
+                    return true;
+                }
+                catch
+                {
+                    try
+                    {
+                        using (var p = Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "taskkill.exe",
+                            Arguments = $"/F /PID {proc.Id}",
+                            CreateNoWindow = true,
+                            UseShellExecute = false
+                        }))
+                        {
+                            p?.WaitForExit(2000);
+                            return p != null && p.ExitCode == 0;
+                        }
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
         /// <summary>
         /// Checks if a process is a legitimate Windows OS component, system package, or certified OEM hardware driver
         /// (e.g. Touchpad, Realtek Audio, Intel/AMD/NVIDIA graphics, Windows 11 SystemApps) by verifying
-        /// its executable path inside C:\Windows, OEM hardware folders in Program Files, or whether it runs
-        /// with higher integrity (Access Denied).
-        /// Standard user accounts cannot write to these paths, preventing unauthorized games/apps from using them.
+        /// its executable path inside C:\Windows, OEM hardware folders in Program Files, or WindowsApps.
+        /// Unverified processes or processes with unknown paths are NOT exempted.
         /// </summary>
         private static bool IsExemptWindowsOrDriverProcess(Process proc)
         {
             try
             {
-                string fullPath = null;
                 try
                 {
-                    fullPath = proc.MainModule?.FileName;
+                    if (proc.HasExited)
+                    {
+                        return true;
+                    }
                 }
-                catch (System.ComponentModel.Win32Exception)
-                {
-                    // Access Denied: elevated or privileged SYSTEM/Driver service.
-                    // Standard user accounts cannot run games under SYSTEM or elevated integrity.
-                    return true;
-                }
-                catch (InvalidOperationException)
-                {
-                    // Process has already terminated
-                    return true;
-                }
-                catch
-                {
-                    return false;
-                }
+                catch { }
 
+                string fullPath = GetProcessExecutablePath(proc);
                 if (string.IsNullOrEmpty(fullPath))
                 {
+                    // Cannot verify binary path (e.g. anti-cheat protected game) -> not exempt
                     return false;
                 }
 
@@ -1820,17 +1893,20 @@ namespace Monitor
         {
             if (string.IsNullOrEmpty(processName)) return false;
 
-            // In Whitelist mode: Any running process that is NOT an essential Windows OS component
-            // and NOT in allowedProcessNames is tracked as game/play activity.
+            // In Whitelist mode: Any running process that is NOT an essential Windows OS component,
+            // NOT an allowed app, and NOT programming toolchain / IDE child process is tracked as game/play activity.
             if (enforcementMode.Equals("whitelist", StringComparison.OrdinalIgnoreCase))
             {
-                if (!BaseWindowsProcesses.Contains(processName) && !allowedProcessNames.Contains(processName, StringComparer.OrdinalIgnoreCase))
+                if (!MatchesProcessName(processName, BaseWindowsProcesses) &&
+                    !MatchesProcessName(processName, allowedProcessNames) &&
+                    !MatchesProcessName(processName, AllowedToolchainProcesses) &&
+                    !MatchesProcessName(processName, AllowedIDEProcessNames))
                 {
                     return true;
                 }
             }
 
-            if (blockedProcessNames.Contains(processName, StringComparer.OrdinalIgnoreCase))
+            if (MatchesProcessName(processName, blockedProcessNames))
             {
                 return true;
             }
