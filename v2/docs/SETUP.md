@@ -59,7 +59,7 @@ Watch **Today**, **Activity** and **History** update. `npm test` runs the automa
    cd v2/server
    npx wrangler login
    ```
-3. If you've never used Workers: open **Workers & Pages** in the dashboard once and pick your `workers.dev` subdomain.
+3. Your `workers.dev` subdomain (e.g. `your-name.workers.dev`) is created automatically on the first deploy. You can change it under **Workers & Pages → Account details**.
 
 ## 4. Database
 
@@ -85,6 +85,10 @@ This deploys `monitor-parent` and `monitor-device` and prints both URLs. Check t
 curl https://monitor-device.<your-subdomain>.workers.dev/api/health
 # {"ok":true,"role":"device"}
 ```
+
+Which address is which:
+- `monitor-parent…` is the web app, for you and his mother.
+- `monitor-device…` is only for the PC; opening it in a browser shows `{"error":"not_found"}`, which is correct.
 
 The parent web app will show *"access_not_configured"* until step 7. That's on purpose: without login protection it refuses to work.
 
@@ -153,6 +157,21 @@ The workflow `.github/workflows/v2-server.yml` runs the tests on every push that
 | `CLOUDFLARE_ACCOUNT_ID` | Dashboard → Workers & Pages, right-hand column |
 
 Without them, the deploy step is skipped and only the tests run.
+
+## Updating after code changes
+
+When there's new code on the branch:
+
+```sh
+cd monitoring
+git stash                    # keeps your local edits to wrangler.jsonc (database id, Access values)
+git pull
+git stash pop
+cd v2/server
+npm install
+npm run db:migrate:remote    # applies new database tables, if any (safe to run every time)
+npm run deploy
+```
 
 ## Where settings live afterwards
 

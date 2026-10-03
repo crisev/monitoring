@@ -43,6 +43,9 @@
       "name": "monitor-device",
       "workers_dev": true,
       "preview_urls": false,
+      // "assets" is inherited from the top level; send every request to the Worker instead,
+      // which only answers /api/device/* (the web app must not be served here).
+      "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
       "vars": { "ROLE": "device" },
       "d1_databases": [
         { "binding": "DB", "database_name": "monitor", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }
