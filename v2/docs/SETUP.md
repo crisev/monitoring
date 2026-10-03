@@ -46,9 +46,10 @@ node fake-device.mjs --url http://localhost:8787 enroll <CODE>
 node fake-device.mjs start        # refused: no game time yet
 # in the web app: Today → +15
 node fake-device.mjs play 2       # games for 2 minutes, heartbeat every 30s
+node fake-device.mjs seed 6       # made-up app/website activity for the last 6 hours
 ```
 
-Watch **Today** and **History** update. `npm test` runs the automated tests.
+Watch **Today**, **Activity** and **History** update. `npm test` runs the automated tests.
 
 ## 3. Cloudflare account and Wrangler login
 

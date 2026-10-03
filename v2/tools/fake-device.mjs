@@ -7,6 +7,7 @@
 //   node fake-device.mjs play <minutes>         GAME ON, heartbeat every 30s, GAME OFF after <minutes>
 //   node fake-device.mjs run                    heartbeat loop (School mode, screen in use) until Ctrl+C
 //   node fake-device.mjs config                 print the School-mode config
+//   node fake-device.mjs seed [hours]           upload made-up app/site activity for the last few hours (demo data)
 //
 // The device token is stored in .fake-device.json next to this script.
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -46,9 +47,44 @@ function show(state) {
   );
 }
 
+const SCHOOL_APPS = [
+  { app: 'msedge', site: 'www.pbinfo.ro', title: 'Problema #1324 - Cifre - pbinfo.ro' },
+  { app: 'msedge', site: 'ro.wikipedia.org', title: 'Ștefan cel Mare - Wikipedia' },
+  { app: 'msedge', site: 'codeforces.com', title: 'Problem - 1850A - Codeforces' },
+  { app: 'Code', title: 'main.cpp - teme - Visual Studio Code' },
+  { app: 'codeblocks', title: 'cifre.cpp [teme] - Code::Blocks 20.03' },
+  { app: 'WINWORD', title: 'Referat istorie.docx - Word' },
+];
+const GAMING_APPS = [
+  { app: 'RobloxPlayerBeta', title: 'Roblox' },
+  { app: 'msedge', site: 'www.youtube.com', title: 'Minecraft but... - YouTube' },
+  { app: 'GeometryDash', title: 'Geometry Dash' },
+];
+const pick = (list) => list[Math.floor(Math.random() * list.length)];
+
+/** Made-up foreground samples for the last `seconds`, split into 10-second chunks. */
+function fakeActivity(seconds, mode, offset = 0) {
+  const items = [];
+  let current = pick(mode === 'gaming' ? GAMING_APPS : SCHOOL_APPS);
+  for (let s = 0; s < seconds; s += 10) {
+    if (Math.random() < 0.05) current = pick(mode === 'gaming' ? GAMING_APPS : SCHOOL_APPS);
+    const audio = mode === 'gaming' || current.site?.includes('youtube') ? Math.min(10, seconds - s) : 0;
+    items.push({ secondsAgo: offset + seconds - s, mode, ...current, seconds: Math.min(10, seconds - s), audioSeconds: audio });
+  }
+  return items;
+}
+
+async function sendActivity(items) {
+  for (let i = 0; i < items.length; i += 1000) {
+    const r = await call('/api/device/activity', { items: items.slice(i, i + 1000) });
+    if (r.status !== 200) throw new Error(`activity ${r.status} ${JSON.stringify(r.data)}`);
+  }
+}
+
 async function heartbeat() {
   const now = Date.now();
   const screenSeconds = Math.round((now - lastBeat) / 1000);
+  await sendActivity(fakeActivity(screenSeconds, saved.sessionId ? 'gaming' : 'school'));
   const r = await call('/api/device/heartbeat', { sessionId: saved.sessionId ?? null, screenActive: true, screenSeconds, clientVersion: 'fake-1' });
   if (r.status !== 200) throw new Error(`heartbeat ${r.status} ${JSON.stringify(r.data)}`);
   lastBeat = now;
@@ -103,8 +139,23 @@ switch (cmd) {
     }
     break;
   }
+  case 'seed': {
+    // A made-up afternoon: blocks of school work with a gaming break, plus a few blocked attempts.
+    const hours = Number(arg ?? 4);
+    const items = [];
+    for (let start = hours * 3600; start > 0; start -= 1800) {
+      const mode = Math.random() < 0.25 ? 'gaming' : 'school';
+      const active = Math.min(start, 600 + Math.floor(Math.random() * 1200));
+      items.push(...fakeActivity(active, mode, start - active));
+    }
+    items.push({ secondsAgo: 3000, mode: 'school', app: 'chrome', blocked: 2 });
+    items.push({ secondsAgo: 5000, mode: 'school', app: 'Discord', blocked: 1 });
+    await sendActivity(items);
+    console.log(`Uploaded ${items.length} samples covering the last ${hours}h.`);
+    break;
+  }
   case 'run':
     for (;;) { await heartbeat(); await sleep(30_000); }
   default:
-    console.log('commands: enroll <CODE> | status | config | start | stop | play <minutes> | run   [--url URL]');
+    console.log('commands: enroll <CODE> | status | config | start | stop | play <minutes> | run | seed [hours]   [--url URL]');
 }

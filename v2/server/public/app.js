@@ -258,6 +258,144 @@ async function renderHistory() {
   stamp();
 }
 
+// ---------- Activity ----------
+
+const SERIES = [['school', 'School'], ['gaming', 'Gaming']];
+
+function shiftDay(day, n) {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function dayLabel(day, opts = { weekday: 'short', day: 'numeric', month: 'short' }) {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', ...opts }).format(new Date(`${day}T00:00:00Z`));
+}
+function hashParams() {
+  return new URLSearchParams(location.hash.split('?')[1] ?? '');
+}
+/** Like dur(), but shows seconds for very short times. */
+function dur2(seconds) {
+  return seconds > 0 && seconds < 60 ? `${seconds}s` : dur(seconds);
+}
+function splitTip(r) {
+  const parts = [`School ${dur2(r.school)}`, `Gaming ${dur2(r.gaming)}`];
+  if (r.audio) parts.push(`sound ${dur2(r.audio)}`);
+  if (r.blocked) parts.push(`blocked ${r.blocked}×`);
+  return parts.join(' · ');
+}
+
+function legend() {
+  return h('div', { class: 'legend' }, SERIES.map(([k, label]) => h('span', {}, h('i', { class: `swatch ${k}` }), label)));
+}
+
+/** Horizontal bars, school + gaming stacked, longest first. */
+function barList(rows, nameOf, subOf) {
+  const max = Math.max(1, ...rows.map((r) => r.seconds));
+  return h('div', { class: 'bars' }, rows.map((r) =>
+    h('div', { class: 'bar-row', 'data-tip': `${nameOf(r)} — ${dur2(r.seconds)} (${splitTip(r)})`, tabindex: '0' },
+      h('div', { class: 'bar-label' },
+        h('span', { class: 'bar-name' }, nameOf(r), subOf && subOf(r) ? h('span', { class: 'muted small' }, ` ${subOf(r)}`) : null),
+        h('span', { class: 'num' }, r.seconds ? dur2(r.seconds) : `blocked ${r.blocked}×`)),
+      h('div', { class: 'bar-track' },
+        SERIES.filter(([k]) => r[k] > 0).map(([k]) => h('span', { class: `seg ${k}`, style: `width:${(r[k] / max) * 100}%` }))))));
+}
+
+/** One day as a strip of 5-minute slots, coloured by mode. */
+function timeline(report) {
+  const slots = report.timeline;
+  const HOUR = 3_600_000;
+  const slotMs = report.slotMinutes * 60_000;
+  let start = Math.floor(slots[0].slot / HOUR) * HOUR;
+  let end = Math.ceil((slots.at(-1).slot + slotMs) / HOUR) * HOUR;
+  if (end - start < 6 * HOUR) end = start + 6 * HOUR;
+  const span = end - start;
+  const hours = span / HOUR;
+  // Keep hour labels at least ~56px apart on narrow screens.
+  const width = Math.max(200, view.clientWidth - 64);
+  const every = [1, 2, 3, 4, 6, 12].find((n) => width / (hours / n) >= 56) ?? 12;
+  const ticks = [];
+  for (let t = start; t <= end; t += every * HOUR) {
+    ticks.push(h('span', { class: 'tick', style: `left:${((t - start) / span) * 100}%` }, when(t, false)));
+  }
+  return h('div', { class: 'card' },
+    h('div', { class: 'strip', role: 'img', 'aria-label': 'When the PC was used' },
+      slots.map((s) => h('span', {
+        class: `slot ${s.mode}`,
+        style: `left:${((s.slot - start) / span) * 100}%;width:${(slotMs / span) * 100}%`,
+        'data-tip': `${when(s.slot, false)}–${when(s.slot + slotMs, false)} · ${s.mode === 'gaming' ? 'Gaming' : 'School'} · mostly ${s.topApp} · ${dur2(s.seconds)} active`,
+      }))),
+    h('div', { class: 'ticks' }, ticks));
+}
+
+/** Several days as stacked columns. */
+function perDay(report) {
+  const byDay = new Map(report.perDay.map((d) => [d.day, d]));
+  const days = [];
+  for (let d = report.from; d <= report.to; d = shiftDay(d, 1)) days.push(byDay.get(d) ?? { day: d, seconds: 0, school: 0, gaming: 0 });
+  const max = Math.max(1, ...days.map((d) => d.seconds));
+  const labelEvery = days.length > 14 ? 5 : 1;
+  return h('div', { class: 'card' },
+    h('div', { class: 'cols' }, days.map((d, i) =>
+      h('div', { class: 'col', 'data-tip': `${dayLabel(d.day)} — ${dur2(d.seconds)} (${splitTip(d)})`, tabindex: '0' },
+        h('div', { class: 'col-bar' },
+          SERIES.filter(([k]) => d[k] > 0).map(([k]) => h('span', { class: `seg ${k}`, style: `height:${(d[k] / max) * 100}%` }))),
+        h('div', { class: 'col-label' }, i % labelEvery === 0 ? dayLabel(d.day, { day: 'numeric', month: days.length > 7 ? 'short' : undefined, weekday: days.length <= 7 ? 'short' : undefined }) : '')))));
+}
+
+async function renderActivity() {
+  const p = hashParams();
+  const qs = new URLSearchParams();
+  if (p.get('from')) qs.set('from', p.get('from'));
+  if (p.get('to')) qs.set('to', p.get('to'));
+  const r = await api(`/activity?${qs}`);
+  timeZone = r.timeZone;
+
+  const go = (from, to) => (location.hash = `#activity?from=${from}&to=${to}`);
+  const presets = [
+    ['Today', r.today, r.today],
+    ['Yesterday', shiftDay(r.today, -1), shiftDay(r.today, -1)],
+    ['7 days', shiftDay(r.today, -6), r.today],
+    ['30 days', shiftDay(r.today, -29), r.today],
+  ];
+  const picker = h('input', { type: 'date', value: r.from === r.to ? r.from : '', max: r.today, 'aria-label': 'Pick a day',
+    onchange: (e) => e.target.value && go(e.target.value, e.target.value) });
+  const filters = h('div', { class: 'filters' },
+    presets.map(([label, from, to]) =>
+      h('button', { class: `chip${r.from === from && r.to === to ? ' on' : ''}`, onclick: () => go(from, to) }, label)),
+    picker);
+
+  const single = r.from === r.to;
+  const title = single ? (r.from === r.today ? `Today, ${dayLabel(r.from)}` : dayLabel(r.from, { weekday: 'long', day: 'numeric', month: 'long' }))
+    : `${dayLabel(r.from)} – ${dayLabel(r.to)}`;
+  const t = r.totals;
+  const blockedApps = r.apps.filter((a) => a.blocked > 0);
+
+  const content = t.seconds === 0 && t.blocked === 0
+    ? [h('div', { class: 'card muted' }, 'No activity recorded for this period.')]
+    : [
+        h('div', { class: 'tiles tiles3' },
+          h('div', { class: 'card' }, h('div', { class: 'tile-label' }, 'Active on the PC'), h('div', { class: 'tile-value' }, dur(t.seconds))),
+          h('div', { class: 'card' }, h('div', { class: 'tile-label' }, h('i', { class: 'swatch school' }), 'School'), h('div', { class: 'tile-value' }, dur(t.school))),
+          h('div', { class: 'card' }, h('div', { class: 'tile-label' }, h('i', { class: 'swatch gaming' }), 'Gaming'), h('div', { class: 'tile-value' }, dur(t.gaming)))),
+        h('div', { class: 'section-head' }, h('h2', {}, single ? 'When' : 'Per day'), legend()),
+        single ? (r.timeline.length ? timeline(r) : h('div', { class: 'card muted' }, 'No foreground activity.')) : perDay(r),
+        h('h2', {}, 'Apps'),
+        h('div', { class: 'card' }, barList(r.apps.filter((a) => a.seconds > 0), (a) => a.app)),
+        h('h2', {}, 'Websites'),
+        h('div', { class: 'card' }, r.sites.length ? barList(r.sites, (s) => s.site) : h('span', { class: 'muted' }, 'No websites recorded.')),
+        h('h2', {}, 'Window titles'),
+        h('div', { class: 'card' }, r.titles.length
+          ? h('ul', { class: 'list' }, r.titles.map((x) => listItem(x.title, h('span', { class: 'num' }, dur2(x.seconds)), [x.app, x.site].filter(Boolean).join(' · '))))
+          : h('span', { class: 'muted' }, 'No titles recorded.')),
+        blockedApps.length && h('h2', {}, 'Blocked in School mode'),
+        blockedApps.length && h('div', { class: 'card' },
+          h('ul', { class: 'list' }, blockedApps.map((a) => listItem(a.app, h('span', { class: 'num' }, `${a.blocked}×`), null)))),
+      ];
+
+  view.replaceChildren(filters, h('div', { class: 'range-title' }, title), ...content);
+  stamp();
+}
+
 // ---------- Settings ----------
 
 const NUMBER_FIELDS = [
@@ -381,7 +519,7 @@ function isEditing() {
   return [...view.querySelectorAll('input')].some((i) => i.value);
 }
 
-const ROUTES = { today: renderToday, history: renderHistory, settings: renderSettings, devices: renderDevices };
+const ROUTES = { today: renderToday, activity: renderActivity, history: renderHistory, settings: renderSettings, devices: renderDevices };
 
 async function render() {
   const route = (location.hash.slice(1) || 'today').split('?')[0];
@@ -404,6 +542,28 @@ async function render() {
 }
 
 window.addEventListener('hashchange', render);
+
+// Hover / tap tooltips for anything with data-tip (text only).
+const tip = document.getElementById('tip');
+function placeTip(e) {
+  const pad = 12;
+  const x = Math.min(e.clientX + pad, window.innerWidth - tip.offsetWidth - 8);
+  const y = e.clientY - tip.offsetHeight - pad < 8 ? e.clientY + pad : e.clientY - tip.offsetHeight - pad;
+  tip.style.transform = `translate(${Math.max(8, x)}px, ${y}px)`;
+}
+document.addEventListener('pointerover', (e) => {
+  const t = e.target.closest?.('[data-tip]');
+  if (!t) return;
+  tip.textContent = t.dataset.tip;
+  tip.classList.add('show');
+  placeTip(e);
+});
+document.addEventListener('pointermove', (e) => tip.classList.contains('show') && placeTip(e));
+document.addEventListener('pointerout', (e) => {
+  const t = e.target.closest?.('[data-tip]');
+  if (t && !t.contains(e.relatedTarget)) tip.classList.remove('show');
+});
+window.addEventListener('scroll', () => tip.classList.remove('show'), { passive: true });
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && !isEditing() && location.hash.slice(1) !== 'settings') render();
 });

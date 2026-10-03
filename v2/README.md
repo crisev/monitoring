@@ -7,8 +7,8 @@ The original app at the repository root is not changed by v2.
 | Folder | What | Status |
 |---|---|---|
 | `server/` | Cloudflare Worker (TypeScript, Hono, D1): time ledger, game leases, device + parent API, Discord proxy, cron | ✅ Phase 1 |
-| `server/public/` | Parent web app (plain HTML/CSS/JS, installable on a phone) | ✅ Phase 1 |
-| `tools/fake-device.mjs` | Simulates a PC against the server | ✅ |
+| `server/public/` | Parent web app (plain HTML/CSS/JS, installable on a phone): Today, Activity, History, Settings, PCs | ✅ Phase 1 |
+| `tools/fake-device.mjs` | Simulates a PC against the server (`seed` uploads demo activity) | ✅ |
 | `client/` | Windows service + tray agent (C#) | Phase 2 |
 
 ## Developing the server
@@ -45,6 +45,7 @@ All calls send `Authorization: Bearer <device token>`, except `enroll`.
 | `POST /api/device/game/start` | – | state, or 409 `{ error: "no_balance", state }` |
 | `POST /api/device/game/stop` | `{ sessionId? }` | state |
 | `GET /api/device/config` | – | `{ version, allowedApps, allowedSites, blockedTitles, screenshotIntervalMinutes, offlineBudgetMinutes, timeZone }` |
+| `POST /api/device/activity` (every 30–60 s) | `{ items: [{ secondsAgo, mode, app, site?, title?, seconds, audioSeconds?, blocked? }] }` (≤ 1000 items) | `{ ok, stored }` |
 | `POST /api/device/events` | `{ events: [{ type, detail? }] }` | `{ ok }` |
 | `POST /api/device/screenshot` | raw `image/jpeg` or `image/png` (≤ 8 MB) | `{ ok }`, forwarded to Discord |
 
@@ -61,6 +62,15 @@ All calls send `Authorization: Bearer <device token>`, except `enroll`.
   "timing": { "heartbeatSeconds": 30, "leaseSeconds": 90, "offlineBudgetSeconds": 3600 }
 }
 ```
+
+**Activity items.**
+- One item per app/site/title for a stretch of foreground time:
+  - `app`: the process name (`msedge`, `Code`, …).
+  - `site`: the domain of the active browser tab. The Windows client reads Edge's address bar through UI Automation.
+  - `secondsAgo`: when the stretch started, measured on the PC's monotonic clock relative to sending, so the PC's wall clock is not needed.
+- `seconds`: foreground time; `audioSeconds`: time spent playing sound; `blocked`: how many times the app was closed in School mode.
+- The server adds the items up into 5-minute slots per app, site and title.
+- Parents see it under **Activity**: totals, a timeline of when the PC was used, apps, websites, window titles, and blocked attempts. Ranges: today, yesterday, 7 or 30 days, or any single day.
 
 **What the client must do:**
 - Go to School mode as soon as `leaseRemainingSeconds` runs out on its **monotonic** timer without a successful renewal.

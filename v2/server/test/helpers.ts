@@ -13,7 +13,7 @@ export const DAY = 24 * 60 * MIN;
 export const db = () => env.DB;
 
 export async function resetDb(): Promise<void> {
-  for (const t of ['ledger', 'events', 'game_sessions', 'devices', 'days', 'settings']) {
+  for (const t of ['activity', 'ledger', 'events', 'game_sessions', 'devices', 'days', 'settings']) {
     await env.DB.exec(`DELETE FROM ${t}`);
   }
 }

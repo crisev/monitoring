@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { ActivityItemSchema, recordActivity } from '../activity';
 import type { AppVars } from '../auth';
 import { requireDevice } from '../auth';
 import { enroll } from '../devices';
@@ -30,6 +31,7 @@ const EventsBody = z.object({
     .array(z.object({ type: z.string().min(1).max(50), detail: z.unknown().optional() }))
     .max(100),
 });
+const ActivityBody = z.object({ items: z.array(ActivityItemSchema).max(1000) });
 /** Device event types that are also posted to Discord. */
 const NOTIFY_TYPES = new Set(['client_started', 'tamper', 'shutdown', 'agent_missing']);
 const MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024;
@@ -135,6 +137,15 @@ app.get('/config', requireDevice, async (c) => {
     screenshotIntervalMinutes: settings.screenshotIntervalMinutes,
     offlineBudgetMinutes: settings.offlineBudgetMinutes,
   });
+});
+
+app.post('/activity', requireDevice, async (c) => {
+  const now = c.get('now');
+  const input = await body(c.req.raw, ActivityBody);
+  if (!input) return c.json({ error: 'bad_request' }, 400);
+  const { settings } = await loadSettings(c.env.DB);
+  const stored = await recordActivity(c.env.DB, c.get('device').id, settings.timeZone, input.items, now);
+  return c.json({ ok: true, stored });
 });
 
 app.post('/events', requireDevice, async (c) => {

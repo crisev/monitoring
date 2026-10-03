@@ -95,6 +95,20 @@ describe('http api', () => {
     expect(ledger.items[1].by).toBe('parent@example.com');
   });
 
+  it('stores activity from the PC and reports it to parents', async () => {
+    const token = await enrollPc();
+    const bad = await call(REMOTE, '/api/device/activity', { json: { items: [{ app: 'x' }] }, token });
+    expect(bad.status).toBe(400);
+    const ok = await call(REMOTE, '/api/device/activity', {
+      json: { items: [{ secondsAgo: 0, mode: 'school', app: 'msedge', site: 'https://pbinfo.ro/x', title: 'pbinfo', seconds: 45 }] },
+      token,
+    });
+    expect(await ok.json()).toMatchObject({ ok: true, stored: 1 });
+    const report = (await (await call(LOCAL, '/api/parent/activity')).json()) as { sites: { site: string; seconds: number }[] };
+    expect(report.sites).toEqual([expect.objectContaining({ site: 'pbinfo.ro', seconds: 45 })]);
+    expect((await call(LOCAL, '/api/parent/activity?from=2026-01-01&to=2026-12-31')).status).toBe(400);
+  });
+
   it('settings are validated and versioned', async () => {
     const bad = await call(LOCAL, '/api/parent/settings', { method: 'PUT', json: { dailyGameMinutes: -5 } });
     expect(bad.status).toBe(400);

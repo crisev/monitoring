@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { csrf } from 'hono/csrf';
 import { z } from 'zod';
+import { activityReport } from '../activity';
 import type { AppVars } from '../auth';
 import { requireParent } from '../auth';
 import { deviceView, issueEnrollCode, listDevices, revokeDevice } from '../devices';
@@ -12,6 +13,7 @@ import { addGrant, ensureDays, gameBalance } from '../ledger';
 import { announceClosed } from '../sessions-notify';
 import { loadSettings, saveSettings, SettingsSchema } from '../settings';
 import { todayView } from '../state';
+import { dayOf } from '../time';
 
 const app = new Hono<{ Bindings: Env; Variables: AppVars }>();
 app.use('*', csrf());
@@ -35,6 +37,10 @@ const Paging = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
   before: z.coerce.number().int().optional(),
 });
+
+const Day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const ActivityQuery = z.object({ from: Day.optional(), to: Day.optional() });
+const MAX_ACTIVITY_DAYS = 62;
 
 async function json(c: { req: { raw: Request } }): Promise<unknown> {
   return c.req.raw.json().catch(() => undefined);
@@ -93,6 +99,18 @@ app.post('/end-gaming', async (c) => {
   const stored = await loadSettings(db);
   const day = await ensureDays(db, stored.settings, now);
   return c.json(await todayView(db, stored, day, now));
+});
+
+app.get('/activity', async (c) => {
+  const q = ActivityQuery.safeParse(c.req.query());
+  if (!q.success) return c.json({ error: 'bad_request', issues: q.error.issues }, 400);
+  const { settings } = await loadSettings(c.env.DB);
+  const today = dayOf(c.get('now'), settings.timeZone);
+  const to = q.data.to ?? q.data.from ?? today;
+  const from = q.data.from ?? to;
+  const span = (Date.parse(to) - Date.parse(from)) / 86_400_000;
+  if (span < 0 || span > MAX_ACTIVITY_DAYS) return c.json({ error: 'bad_range' }, 400);
+  return c.json({ ...(await activityReport(c.env.DB, from, to)), today, timeZone: settings.timeZone });
 });
 
 app.get('/settings', async (c) => c.json(await loadSettings(c.env.DB)));

@@ -154,7 +154,7 @@ The last two rows are rarely changed and are deliberately kept out of the web ap
 
 **PC:** gets its own **device token**, created at enrollment and stored hashed on the server. It can only *consume* time, report data and read its config; granting time needs a parent login. Even if the child extracted the token, it would gain him nothing.
 
-## 5. Statistics (replaces the long Discord summaries)
+## 5. Statistics (replaces the long Discord summaries) — server side and Activity page ✅ done
 
 - The agent samples the foreground app/title and the audio apps every 5s. The service batches them into **1-minute buckets** `{minute, mode, app, site/title, fgSeconds, audioSeconds}` and uploads them with the heartbeat. The server stamps them with **server time**.
 - **Dashboard**:
