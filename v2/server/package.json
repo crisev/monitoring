@@ -1,0 +1,25 @@
+{
+  "name": "monitor-v2-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "db:migrate:local": "wrangler d1 migrations apply monitor --local",
+    "db:migrate:remote": "wrangler d1 migrations apply monitor --remote --env parent",
+    "deploy": "wrangler deploy --env parent && wrangler deploy --env device",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "hono": "^4.13.12",
+    "jose": "^6.2.12",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0",
+    "typescript": "^5.9.0",
+    "vitest": "~4.1.11",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^4.0.0"
+  }
+}

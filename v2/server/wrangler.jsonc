@@ -1,0 +1,52 @@
+// Monitor v2 server.
+//
+// One codebase, deployed as two Workers that share the same D1 database:
+//   monitor-parent  -> parent web app + /api/parent/*  (put behind Cloudflare Access)
+//   monitor-device  -> /api/device/*                    (public, PCs authenticate with a device token)
+// The top-level config (no --env) is for local development and tests only and serves both.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "monitor-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  "vars": { "ROLE": "all" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "monitor", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }
+  ],
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+
+  "env": {
+    "parent": {
+      "name": "monitor-parent",
+      "workers_dev": true,
+      // Preview URLs would not be covered by the Access policy: keep them off.
+      "preview_urls": false,
+      "vars": {
+        "ROLE": "parent",
+        // Fill these in after enabling Cloudflare Access (see v2/docs/SETUP.md).
+        "ACCESS_TEAM_DOMAIN": "REPLACE_ME.cloudflareaccess.com",
+        "ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD",
+        // Comma-separated. Second check on top of the Access policy.
+        "PARENT_EMAILS": "sevescu.cristian@gmail.com"
+      },
+      "d1_databases": [
+        { "binding": "DB", "database_name": "monitor", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }
+      ],
+      "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+      // Day rollover + "PC silent" alerts.
+      "triggers": { "crons": ["*/5 * * * *"] }
+    },
+    "device": {
+      "name": "monitor-device",
+      "workers_dev": true,
+      "preview_urls": false,
+      "vars": { "ROLE": "device" },
+      "d1_databases": [
+        { "binding": "DB", "database_name": "monitor", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }
+      ]
+    }
+  }
+}

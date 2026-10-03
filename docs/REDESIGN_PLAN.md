@@ -1,6 +1,6 @@
 # Monitor v2 — Redesign Plan
 
-Status: **draft v2, decisions applied** · Owner: crisev
+Status: **Phase 1 (server + parent web app) implemented in `v2/server`** · Owner: crisev
 
 v2 is built **from scratch in a new folder `v2/`**. The current app (repo root) is not modified. It keeps running on the PC until v2 passes its acceptance tests, and is then uninstalled.
 
@@ -77,7 +77,7 @@ Every change to the game balance is an **append-only ledger row**: `{date, kind,
 | `adjustment` | manual correction (± any amount) | ± |
 
 - **All game time carries over** (daily allowance and grants alike), up to `maxGameBalance`.
-- Start of day: `balance = min(maxGameBalance, balance) + dailyGameAllowance`. The cap trims only what was carried over, so a large grant still works fully on the day it's given.
+- Start of day: `balance = min(maxGameBalance, balance + dailyGameAllowance)`, matching the old app's "5 days" rule. A grant always counts in full on the day it's given; the cap is applied the next morning.
 - `dailyGameAllowance` can be **0** (the usual case). Game time then exists only through grants.
 - `maxGameBalance` is set in **minutes**, not as "N × daily", because N × 0 = 0 would erase every grant at midnight. Default **300 min** (5 days × 60 min).
 - The rollover runs lazily on the first request of a new server day, and also from an hourly cron. It is idempotent, so running it twice changes nothing.
@@ -111,7 +111,7 @@ sequenceDiagram
 ### 3.3 Screen time (no time-of-day limits)
 
 - There are **no allowed-hours windows and no night limit** for now. The only limits are usage limits: the game balance and the daily screen-time limit.
-- The heartbeat carries `screenActive` (session not locked). The server adds `min(serverNow − lastHeartbeat, 90s)` to today's screen time. Both School and Gaming time count.
+- The heartbeat carries `screenSeconds`: seconds the screen was in use since the last acknowledged heartbeat, measured on the PC's monotonic clock and including offline time. The server adds `min(screenSeconds, server time elapsed since the previous heartbeat + 5s)`, so the PC can never report more time than really passed. Both School and Gaming time count.
 - The server returns `screenRemaining`. The PC counts it down on the monotonic timer, shows the 10/5/1-minute warnings and shuts down at 0, as it does now.
 - **Extra school time** (`+N school today`) raises **today's** screen-time limit only. It does **not** carry over, and it resets at midnight.
 - The data model keeps an optional `allowedHours` field (off by default), so a night limit can be switched on later from the web app without code changes.
@@ -121,7 +121,7 @@ sequenceDiagram
 - **Gaming:** can't start offline. A running session ends when its lease expires (≤ 90s).
 - **School mode:** keeps working with the whitelist. The PC counts down screen time from the last value the server sent.
 - **Boot without network:** an **offline budget** (default 60 min) applies. It is counted only between successful server contacts, so rebooting doesn't reset it and the clock isn't involved. When it runs out: shutdown.
-- The service stores the offline counter and the last server state in an ACL-protected location (SYSTEM-only). On reconnect it uploads the offline screen seconds; the server only ever adds them.
+- The service stores the offline counter and the last server state in an ACL-protected location (SYSTEM-only). On reconnect the offline screen seconds go up with the next heartbeat (`screenSeconds`).
 - **Cron alert:** no heartbeat for 15 min while the PC was last seen with an active screen → Discord message ("PC silent: off, offline, or tampered?").
 
 ## 4. Where things are configured (the Gist goes away)
@@ -219,8 +219,8 @@ v2 is new code, so it starts with the split. Building a user-space app first and
 / (existing app, untouched)
 /v2/
   server/              Cloudflare Worker (TypeScript, Hono router, zod validation)
-    src/  migrations/  test/  wrangler.toml
-  web/                 Parent app (Vite + React + TypeScript, Chart.js), built into the Worker's assets
+    src/  migrations/  test/  wrangler.jsonc
+    public/            Parent web app: plain HTML/CSS/JS, no build step (charts added in Phase 4)
   client/              C# (.NET 10)
     MonitorV2.sln
     Monitor.Core/      API client, lease controller, enforcement, Edge policies
@@ -229,12 +229,13 @@ v2 is new code, so it starts with the split. Building a user-space app first and
     Monitor.Updater/   swap + rollback
     install/install.ps1
   tools/fake-device.mjs  simulates a PC against the server (for testing without Windows)
-.github/workflows/     existing release (unchanged) + v2-server-deploy + v2-client-release
+  docs/SETUP.md          step-by-step Cloudflare setup (Phase 0)
+.github/workflows/     existing release (unchanged) + v2-server.yml (test + deploy) + v2-client-release (Phase 2)
 ```
 
 ## 9. Phases
 
-### Phase 0 — Environment setup (≈ ½ day, you, step-by-step guide provided)
+### Phase 0 — Environment setup (≈ ½ day, you): follow [`v2/docs/SETUP.md`](../v2/docs/SETUP.md)
 1. **Cloudflare:**
    - account (you already sign in with Google)
    - Node.js LTS + `npm i -g wrangler`, then `wrangler login`
@@ -248,7 +249,7 @@ v2 is new code, so it starts with the split. Building a user-space app first and
 5. **CI deploy:** Cloudflare API token (Workers + D1 edit) → GitHub repo secret `CLOUDFLARE_API_TOKEN`.
 6. **For the C# client:** .NET 10 SDK and Visual Studio Community or VS Code + C# Dev Kit, on Windows.
 
-### Phase 1 — Server + parent web app (minimal)
+### Phase 1 — Server + parent web app (minimal) ✅ done
 - **Server:**
   - D1 schema (settings, ledger, sessions, devices, events)
   - day rollover, game leases, heartbeat, config, device enrollment
