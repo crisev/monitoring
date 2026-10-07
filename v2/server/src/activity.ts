@@ -4,25 +4,41 @@ import { dayOf } from './time';
 export const SLOT_MS = 5 * 60 * 1000;
 const UPSERT_CHUNK = 50;
 
+// Lenient on purpose: values out of range are clamped or shortened rather than rejected, because a
+// PC that gets a 400 for a batch keeps resending it, and one odd item must not stop all uploads.
+const clamped = (min: number, max: number) =>
+  z.number().refine(Number.isFinite).transform((v) => Math.min(max, Math.max(min, Math.round(v))));
+const shortened = (max: number) => z.string().transform((s) => s.trim().slice(0, max));
+
 export const ActivityItemSchema = z.object({
   /** How long ago (seconds, PC monotonic clock) this sample period started, relative to sending. */
-  secondsAgo: z.number().int().min(0).max(7 * 86_400),
+  secondsAgo: clamped(0, 7 * 86_400),
   mode: z.enum(['school', 'gaming']),
-  app: z.string().trim().min(1).max(100),
-  site: z.string().trim().max(300).optional(),
-  title: z.string().max(1000).optional(),
-  seconds: z.number().int().min(0).max(600).default(0),
-  audioSeconds: z.number().int().min(0).max(600).default(0),
-  blocked: z.number().int().min(0).max(1000).default(0),
+  app: shortened(100).pipe(z.string().min(1)),
+  site: shortened(300).nullish(),
+  title: shortened(1000).nullish(),
+  seconds: clamped(0, 600).default(0),
+  audioSeconds: clamped(0, 600).default(0),
+  blocked: clamped(0, 1000).default(0),
 });
-export type ActivityItem = z.infer<typeof ActivityItemSchema>;
+export type ActivityItem = z.output<typeof ActivityItemSchema>;
+
+/** Validates items one by one; unusable items are dropped instead of failing the whole batch. */
+export function parseActivityItems(raw: unknown[]): { items: ActivityItem[]; dropped: number } {
+  const items: ActivityItem[] = [];
+  for (const r of raw) {
+    const p = ActivityItemSchema.safeParse(r);
+    if (p.success) items.push(p.data);
+  }
+  return { items, dropped: raw.length - items.length };
+}
 
 export function normalizeApp(app: string): string {
   return app.trim().replace(/\.exe$/i, '');
 }
 
 /** "https://www.pbinfo.ro/probleme/1" -> "pbinfo.ro"; "WWW.Example.com:8080" -> "example.com". */
-export function normalizeSite(site: string | undefined): string {
+export function normalizeSite(site: string | null | undefined): string {
   if (!site) return '';
   let s = site.trim().toLowerCase();
   if (!s) return '';
@@ -37,6 +53,7 @@ export function normalizeSite(site: string | undefined): string {
 /** Adds a batch of samples, summing them into 5-minute slots. Returns how many items were stored. */
 export async function recordActivity(db: D1Database, deviceId: string, timeZone: string, items: ActivityItem[], now: number) {
   const stmts = items
+    .filter((i) => normalizeApp(i.app) !== '')
     .filter((i) => i.seconds > 0 || i.audioSeconds > 0 || i.blocked > 0)
     .map((i) => {
       const at = now - i.secondsAgo * 1000;

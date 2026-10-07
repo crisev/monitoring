@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { ActivityItemSchema, recordActivity } from '../activity';
+import { parseActivityItems, recordActivity } from '../activity';
 import type { AppVars } from '../auth';
 import { requireDevice } from '../auth';
 import { enroll } from '../devices';
@@ -22,16 +22,18 @@ const EnrollBody = z.object({ code: z.string().min(4).max(40) });
 const HeartbeatBody = z.object({
   sessionId: z.string().max(64).nullish(),
   screenActive: z.boolean(),
-  /** Screen-in-use seconds measured on the PC since the last acknowledged heartbeat. */
-  screenSeconds: z.number().min(0).max(86_400).optional().default(0),
-  clientVersion: z.string().max(40).nullish(),
+  /** Screen-in-use seconds measured on the PC since the last acknowledged heartbeat (clamped, never rejected). */
+  screenSeconds: z.number().refine(Number.isFinite).transform((v) => Math.min(86_400, Math.max(0, v))).optional().default(0),
+  clientVersion: z.string().transform((s) => s.slice(0, 40)).nullish(),
 });
-const EventsBody = z.object({
-  events: z
-    .array(z.object({ type: z.string().min(1).max(50), detail: z.unknown().optional() }))
-    .max(100),
+// Batches are validated item by item (see parseActivityItems / EventItem): a bad item is dropped,
+// never the whole batch, so a PC that retries on errors can't get stuck on one odd value.
+const EventItem = z.object({
+  type: z.string().transform((s) => s.trim().slice(0, 50)).pipe(z.string().min(1)),
+  detail: z.unknown().optional(),
 });
-const ActivityBody = z.object({ items: z.array(ActivityItemSchema).max(1000) });
+const EventsBody = z.object({ events: z.array(z.unknown()).max(1000) });
+const ActivityBody = z.object({ items: z.array(z.unknown()).max(5000) });
 /** Device event types that are also posted to Discord. */
 const NOTIFY_TYPES = new Set(['client_started', 'tamper', 'shutdown', 'agent_missing']);
 const MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024;
@@ -144,8 +146,9 @@ app.post('/activity', requireDevice, async (c) => {
   const input = await body(c.req.raw, ActivityBody);
   if (!input) return c.json({ error: 'bad_request' }, 400);
   const { settings } = await loadSettings(c.env.DB);
-  const stored = await recordActivity(c.env.DB, c.get('device').id, settings.timeZone, input.items, now);
-  return c.json({ ok: true, stored });
+  const { items, dropped } = parseActivityItems(input.items);
+  const stored = await recordActivity(c.env.DB, c.get('device').id, settings.timeZone, items, now);
+  return c.json({ ok: true, stored, dropped });
 });
 
 app.post('/events', requireDevice, async (c) => {
@@ -153,14 +156,18 @@ app.post('/events', requireDevice, async (c) => {
   const device = c.get('device');
   const input = await body(c.req.raw, EventsBody);
   if (!input) return c.json({ error: 'bad_request' }, 400);
+  const valid = input.events.flatMap((raw) => {
+    const p = EventItem.safeParse(raw);
+    return p.success ? [p.data] : [];
+  });
   const toNotify: string[] = [];
-  for (const e of input.events) {
+  for (const e of valid) {
     const detail = e.detail === undefined ? undefined : JSON.stringify(e.detail).slice(0, 2000);
     await logEvent(c.env.DB, now, { type: `pc:${e.type}`, deviceId: device.id, detail });
     if (NOTIFY_TYPES.has(e.type)) toNotify.push(`🖥️ ${device.name}: **${e.type}** ${detail ?? ''}`);
   }
   if (toNotify.length) c.executionCtx.waitUntil(notify(c.env, toNotify.join('\n')));
-  return c.json({ ok: true, stored: input.events.length });
+  return c.json({ ok: true, stored: valid.length, dropped: input.events.length - valid.length });
 });
 
 app.post('/screenshot', requireDevice, async (c) => {

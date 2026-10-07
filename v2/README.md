@@ -45,8 +45,8 @@ All calls send `Authorization: Bearer <device token>`, except `enroll`.
 | `POST /api/device/game/start` | – | state, or 409 `{ error: "no_balance", state }` |
 | `POST /api/device/game/stop` | `{ sessionId? }` | state |
 | `GET /api/device/config` | – | `{ version, allowedApps, allowedSites, blockedTitles, screenshotIntervalMinutes, offlineBudgetMinutes, timeZone }` |
-| `POST /api/device/activity` (every 30–60 s) | `{ items: [{ secondsAgo, mode, app, site?, title?, seconds, audioSeconds?, blocked? }] }` (≤ 1000 items) | `{ ok, stored }` |
-| `POST /api/device/events` | `{ events: [{ type, detail? }] }` | `{ ok }` |
+| `POST /api/device/activity` (every 30–60 s) | `{ items: [{ secondsAgo, mode, app, site?, title?, seconds, audioSeconds?, blocked? }] }` (≤ 5000 items) | `{ ok, stored, dropped }` |
+| `POST /api/device/events` | `{ events: [{ type, detail? }] }` (≤ 1000 events) | `{ ok, stored, dropped }` |
 | `POST /api/device/screenshot` | raw `image/jpeg` or `image/png` (≤ 8 MB) | `{ ok }`, forwarded to Discord |
 
 **State:**
@@ -62,6 +62,11 @@ All calls send `Authorization: Bearer <device token>`, except `enroll`.
   "timing": { "heartbeatSeconds": 30, "leaseSeconds": 90, "offlineBudgetSeconds": 3600 }
 }
 ```
+
+**Out-of-range values are not rejected.**
+- Numbers are clamped and texts are shortened (app 100, site 300, title 1000, event type 50 characters, `screenSeconds` at most 86,400).
+- In activity and event batches, an item that can't be used at all (e.g. no `app`) is dropped and counted in `dropped`; the rest is stored.
+- A `400` therefore means the request itself is malformed (not JSON, or too many items). Retrying the same body won't help.
 
 **Activity items.**
 - One item per app/site/title for a stretch of foreground time:

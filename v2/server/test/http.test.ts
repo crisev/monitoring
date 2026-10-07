@@ -97,8 +97,14 @@ describe('http api', () => {
 
   it('stores activity from the PC and reports it to parents', async () => {
     const token = await enrollPc();
-    const bad = await call(REMOTE, '/api/device/activity', { json: { items: [{ app: 'x' }] }, token });
+    const bad = await call(REMOTE, '/api/device/activity', { json: { items: 'nope' }, token });
     expect(bad.status).toBe(400);
+    // An unusable item is dropped, not the whole batch.
+    const partly = await call(REMOTE, '/api/device/activity', {
+      json: { items: [{ app: 'x' }, { secondsAgo: 0, mode: 'school', app: 'Code', seconds: 5 }] },
+      token,
+    });
+    expect(await partly.json()).toMatchObject({ ok: true, stored: 1, dropped: 1 });
     const ok = await call(REMOTE, '/api/device/activity', {
       json: { items: [{ secondsAgo: 0, mode: 'school', app: 'msedge', site: 'https://pbinfo.ro/x', title: 'pbinfo', seconds: 45 }] },
       token,
@@ -107,6 +113,27 @@ describe('http api', () => {
     const report = (await (await call(LOCAL, '/api/parent/activity')).json()) as { sites: { site: string; seconds: number }[] };
     expect(report.sites).toEqual([expect.objectContaining({ site: 'pbinfo.ro', seconds: 45 })]);
     expect((await call(LOCAL, '/api/parent/activity?from=2026-01-01&to=2026-12-31')).status).toBe(400);
+  });
+
+  it('accepts out-of-range values from the PC by clamping them instead of rejecting the request', async () => {
+    const token = await enrollPc();
+    const hb = await call(REMOTE, '/api/device/heartbeat', {
+      json: { screenActive: true, screenSeconds: 999_999, clientVersion: 'x'.repeat(80) },
+      token,
+    });
+    expect(hb.status).toBe(200);
+
+    const events = Array.from({ length: 150 }, (_, i) => ({ type: i === 0 ? '' : `e${i}`.padEnd(70, 'x') }));
+    const ev = await call(REMOTE, '/api/device/events', { json: { events }, token });
+    expect(await ev.json()).toMatchObject({ ok: true, stored: 149, dropped: 1 });
+
+    const act = await call(REMOTE, '/api/device/activity', {
+      json: {
+        items: [{ secondsAgo: 99_999_999, mode: 'school', app: 'A'.repeat(150), title: 'T'.repeat(2000), seconds: 5000, site: null }],
+      },
+      token,
+    });
+    expect(await act.json()).toMatchObject({ ok: true, stored: 1, dropped: 0 });
   });
 
   it('settings are validated and versioned', async () => {
