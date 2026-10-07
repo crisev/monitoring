@@ -42,7 +42,7 @@ Holes found in the current code (child account = standard user):
                  │  Monitor.Agent    (runs as child, per session)                   │
                  │   tray icon + dialog (GAME ON/OFF) · foreground/audio sampling · │
                  │   screenshots · toast notifications                              │
-                 └──────────────────────────────────────────────────────────────────┘
+                 └────────────────────────────────────────────────────────────────┘
  Discord ◀── Worker forwards screenshots and event notifications (webhook stays server-side)
 ```
 
@@ -291,3 +291,6 @@ v2 is new code, so it starts with the split. Building a user-space app first and
 | 7 | Client approach | New code in `v2/`; current app untouched until switch-over. |
 | 8 | Screen time counts both modes | Yes (default, not changed). |
 | 9 | One child, one PC | Yes for the UI; the data model allows more. |
+| 10 | What is blocked in Gaming mode | **Nothing.** |
+| 11 | When today's screen time is used up | Warnings at 10, 5 and 1 minutes, then **shut down**. |
+| 12 | Where the Windows client is tested | The parent's PC, logged in as a separate **standard** (non-admin) test account, since admin accounts are not monitored. |
