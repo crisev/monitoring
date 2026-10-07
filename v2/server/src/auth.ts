@@ -33,8 +33,9 @@ export const requireParent: MiddlewareHandler<{ Bindings: Env; Variables: AppVar
     c.set('parentEmail', env.DEV_PARENT_EMAIL);
     return next();
   }
-  const placeholder = (v?: string) => !v || v.includes('REPLACE');
-  if (placeholder(env.ACCESS_TEAM_DOMAIN) || placeholder(env.ACCESS_AUD)) {
+  const teamDomain = env.ACCESS_TEAM_DOMAIN;
+  const aud = env.ACCESS_AUD;
+  if (!teamDomain || !aud || teamDomain.includes('REPLACE') || aud.includes('REPLACE')) {
     return c.json({ error: 'access_not_configured' }, 500);
   }
   const token = c.req.header('cf-access-jwt-assertion');
@@ -42,9 +43,9 @@ export const requireParent: MiddlewareHandler<{ Bindings: Env; Variables: AppVar
 
   let email: string | undefined;
   try {
-    const { payload } = await jwtVerify(token, jwksFor(env.ACCESS_TEAM_DOMAIN), {
-      issuer: `https://${env.ACCESS_TEAM_DOMAIN}`,
-      audience: env.ACCESS_AUD,
+    const { payload } = await jwtVerify(token, jwksFor(teamDomain), {
+      issuer: `https://${teamDomain}`,
+      audience: aud,
     });
     email = typeof payload.email === 'string' ? payload.email.toLowerCase() : undefined;
   } catch {
