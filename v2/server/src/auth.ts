@@ -33,7 +33,8 @@ export const requireParent: MiddlewareHandler<{ Bindings: Env; Variables: AppVar
     c.set('parentEmail', env.DEV_PARENT_EMAIL);
     return next();
   }
-  if (!env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD || env.ACCESS_AUD.startsWith('REPLACE')) {
+  const placeholder = (v?: string) => !v || v.includes('REPLACE');
+  if (placeholder(env.ACCESS_TEAM_DOMAIN) || placeholder(env.ACCESS_AUD)) {
     return c.json({ error: 'access_not_configured' }, 500);
   }
   const token = c.req.header('cf-access-jwt-assertion');

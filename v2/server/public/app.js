@@ -36,6 +36,8 @@ async function api(path, { method = 'GET', body } = {}) {
     const msg =
       res.status === 401 ? 'Not signed in — reload the page to log in.'
       : res.status === 403 ? 'This account is not allowed.'
+      : data.error === 'access_not_configured'
+        ? 'The server does not have the Cloudflare Access values yet: set ACCESS_TEAM_DOMAIN and ACCESS_AUD in wrangler.jsonc (env → parent → vars) and run npm run deploy.'
       : data.issues ? data.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
       : data.error || `Request failed (${res.status})`;
     throw new Error(msg);
