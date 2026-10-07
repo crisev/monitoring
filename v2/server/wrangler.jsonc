@@ -14,7 +14,7 @@
 
   "vars": { "ROLE": "all" },
   "d1_databases": [
-    { "binding": "DB", "database_name": "monitor", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "monitor", "database_id": "d0a39865-70f8-4829-8fcf-97a66212449f", "migrations_dir": "migrations" }
   ],
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
 
@@ -27,13 +27,13 @@
       "vars": {
         "ROLE": "parent",
         // Fill these in after enabling Cloudflare Access (see v2/docs/SETUP.md).
-        "ACCESS_TEAM_DOMAIN": "REPLACE_ME.cloudflareaccess.com",
-        "ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD",
+        "ACCESS_TEAM_DOMAIN": "https://small-union-8ae5.cloudflareaccess.com/cdn-cgi/access/certs",
+        "ACCESS_AUD": "3ee70f290bfd4993ae2c7f314ba852e8ef47b90d088def9653961b3e6fe1b578",
         // Comma-separated. Second check on top of the Access policy.
         "PARENT_EMAILS": "sevescu.cristian@gmail.com"
       },
       "d1_databases": [
-        { "binding": "DB", "database_name": "monitor", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }
+        { "binding": "DB", "database_name": "monitor", "database_id": "d0a39865-70f8-4829-8fcf-97a66212449f", "migrations_dir": "migrations" }
       ],
       "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
       // Day rollover + "PC silent" alerts.
@@ -48,7 +48,7 @@
       "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
       "vars": { "ROLE": "device" },
       "d1_databases": [
-        { "binding": "DB", "database_name": "monitor", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }
+        { "binding": "DB", "database_name": "monitor", "database_id": "d0a39865-70f8-4829-8fcf-97a66212449f", "migrations_dir": "migrations" }
       ]
     }
   }
