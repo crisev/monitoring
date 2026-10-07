@@ -1,0 +1,8 @@
+<Project>
+  <!-- Monitor.csproj (the original app) compiles every .cs file below the repository root by default.
+       Keep the v2 code out of it: v2 has its own projects under v2/client, which do not read this file
+       (v2/client/Directory.Build.props stops the search there). -->
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);v2/**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

@@ -138,7 +138,15 @@ Secrets are stored encrypted by Cloudflare and are never in git or on the PC.
 
 Web app → **PCs → Add PC** gives a code valid for 30 minutes, for one use.
 
-Until the Windows client v2 exists (Phase 2), you can test the real deployment with the fake PC:
+Install the Windows client with that code: see [`../client/README.md`](../client/README.md). In short, build with `v2\client\publish.ps1`, copy `dist\MonitorV2` to the PC, and in an administrator PowerShell run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerUrl https://monitor-device.<your-subdomain>.workers.dev -Code <CODE> -DryRun
+```
+
+`-DryRun` only logs what it would close or shut down. Remove it once the log looks right.
+
+Without Windows, you can test the real deployment with the fake PC:
 
 ```sh
 node v2/tools/fake-device.mjs --url https://monitor-device.<your-subdomain>.workers.dev enroll <CODE>

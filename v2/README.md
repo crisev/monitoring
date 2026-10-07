@@ -9,7 +9,7 @@ The original app at the repository root is not changed by v2.
 | `server/` | Cloudflare Worker (TypeScript, Hono, D1): time ledger, game leases, device + parent API, Discord proxy, cron | ✅ Phase 1 |
 | `server/public/` | Parent web app (plain HTML/CSS/JS, installable on a phone): Today, Activity, History, Settings, PCs | ✅ Phase 1 |
 | `tools/fake-device.mjs` | Simulates a PC against the server (`seed` uploads demo activity) | ✅ |
-| `client/` | Windows service + tray agent (C#) | Phase 2 |
+| `client/` | Windows service (SYSTEM) + tray agent (C#, .NET 10): lease and screen-time countdowns, School-mode enforcement, Edge policies, install script. See [`client/README.md`](client/README.md) | ✅ Phase 2 (acceptance tests on the PC pending) |
 
 ## Developing the server
 

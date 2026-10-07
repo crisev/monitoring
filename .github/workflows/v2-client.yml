@@ -1,0 +1,33 @@
+name: v2 client
+
+on:
+  push:
+    paths:
+      - 'v2/client/**'
+      - '.github/workflows/v2-client.yml'
+  pull_request:
+    paths:
+      - 'v2/client/**'
+
+defaults:
+  run:
+    working-directory: v2/client
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet test MonitorV2.sln -c Release
+      - name: Publish
+        shell: pwsh
+        run: ./publish.ps1
+      # Download from the run's Summary page; copy the MonitorV2 folder to the PC and run install.ps1.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MonitorV2
+          path: v2/client/dist/MonitorV2
+          retention-days: 30

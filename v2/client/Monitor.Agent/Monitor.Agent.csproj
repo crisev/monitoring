@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Runs as the child in each user session: tray icon and status dialog (GAME ON/OFF), notifications,
+       foreground/audio sampling and screenshots. Everything it does goes through the service. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>Monitor.Agent</AssemblyName>
+    <RootNamespace>Monitor.Agent</RootNamespace>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- For System.Windows.Automation (reads the address bar of Edge). -->
+    <UseWPF>true</UseWPF>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Monitor.Core\Monitor.Core.csproj" />
+  </ItemGroup>
+
+</Project>

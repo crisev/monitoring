@@ -1,6 +1,6 @@
 # Monitor v2 — Redesign Plan
 
-Status: **Phase 1 (server + parent web app) implemented in `v2/server`** · Owner: crisev
+Status: **Phase 1 (server + parent web app) implemented in `v2/server`; Phase 2 (Windows client) implemented in `v2/client`, acceptance tests on the PC pending** · Owner: crisev
 
 v2 is built **from scratch in a new folder `v2/`**. The current app (repo root) is not modified. It keeps running on the PC until v2 passes its acceptance tests, and is then uninstalled.
 
@@ -230,7 +230,7 @@ v2 is new code, so it starts with the split. Building a user-space app first and
     install/install.ps1
   tools/fake-device.mjs  simulates a PC against the server (for testing without Windows)
   docs/SETUP.md          step-by-step Cloudflare setup (Phase 0)
-.github/workflows/     existing release (unchanged) + v2-server.yml (test + deploy) + v2-client-release (Phase 2)
+.github/workflows/     existing release (unchanged) + v2-server.yml (test + deploy) + v2-client.yml (test + publish the install folder)
 ```
 
 ## 9. Phases
@@ -258,7 +258,7 @@ v2 is new code, so it starts with the split. Building a user-space app first and
 - **Web app:** Today view (balances, quick actions, live mode), Settings form, ledger history, Devices.
 - **Testable before any C#:** `tools/fake-device.mjs` plays the PC (start game, heartbeat, go silent, stop).
 
-### Phase 2 — Windows client v2 (service + agent) and install
+### Phase 2 — Windows client v2 (service + agent) and install — implemented, see [`v2/client/README.md`](../v2/client/README.md)
 - Core, Service, Agent, install script. Copy and clean up the reusable parts of the old app.
 - **Acceptance tests (must all hold):**
   - change the date/time/time zone

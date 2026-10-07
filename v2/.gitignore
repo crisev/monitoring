@@ -1,1 +1,3 @@
 tools/.fake-device.json
+client/dist/
+client/**/TestResults/
