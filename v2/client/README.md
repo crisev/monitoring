@@ -57,7 +57,7 @@ Test on a separate **standard** account. Administrator accounts are not monitore
   - Windows shell programs or console tools
   - on the **Allowed apps** list
   - compilers and toolchains
-  - started by an IDE (Code::Blocks, VS Code, Visual Studio, up to 4 levels down)
+  - **console programs** started by an IDE (Code::Blocks, VS Code, Visual Studio, up to 4 levels down): his own compiled exercises. Windowed programs (browsers, games) are closed even when an IDE starts them, and script runtimes (`java`, `python`, `node`, `dotnet`, …) only run if they are on the Allowed apps list. Each process is judged by its own `.exe`, so a program of his that launches Chrome does not make Chrome allowed.
   - in a trusted folder: `C:\Windows` (only files owned by the system), driver/vendor folders, Edge's helper folders, Windows shell packages, the install folder
 
   A window whose title contains a **blocked title** is closed. Closing Edge's window closes the whole browser, as in the old app. When Gaming ends, Edge is closed so videos and preloaded pages stop.
@@ -83,7 +83,7 @@ On the test account, with test mode off. Each case is passed when game time used
 
 ## Known gaps
 
-- **Programs started from an IDE are allowed.** This rule comes from the old app, so the child can run their own programs. It also means a game started from VS Code's terminal (Code → PowerShell → game) runs. Closing it would need something like an executable signature check.
+- **Console programs started from an IDE are allowed**, so he can run his own exercises. A console game started from Code::Blocks or VS Code's terminal would therefore run (rare: browsers and games are windowed). Windowed programs he writes himself (SFML, raylib) are closed; if he needs them, they would need an extra rule (e.g. unsigned windowed programs from his projects folder).
 - **A new day while offline:** screen time counts down from the last server value (yesterday's) until the PC reaches the server.
 - **Apps installed per user** (OneDrive, Discord, Spotify, Logitech tools in `AppData`) are closed in School mode unless they are on the Allowed apps list. Check the test-mode log.
 - No automatic updates yet (Phase 3: `Monitor.Updater`).

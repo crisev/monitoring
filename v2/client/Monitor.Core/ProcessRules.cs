@@ -55,10 +55,24 @@ public sealed class ProcessRules
         "nm", "objdump", "ranlib", "strip", "windres", "gdb", "gdborig", "mingw32-make", "make", "clang", "clang++", "lld",
     };
 
-    /// <summary>IDEs whose child processes (the student's own compiled programs) may run.</summary>
+    /// <summary>
+    /// IDEs whose child processes may run, as long as they are console programs (the student's own compiled
+    /// exercises). Windowed programs such as browsers and games are closed even when an IDE started them.
+    /// </summary>
     public static readonly IReadOnlySet<string> IdeProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "codeblocks", "cb_console_runner", "gdb", "Code", "devenv",
+    };
+
+    /// <summary>
+    /// Script and bytecode runtimes. They are console programs but can run anything, windowed games included
+    /// (<c>java -jar</c>, Python with pygame), so being started from an IDE is not enough for them: they only
+    /// run if the parent puts them on the allowed-apps list.
+    /// </summary>
+    public static readonly IReadOnlySet<string> ScriptRuntimes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "python", "pythonw", "py", "pyw", "java", "javaw", "node", "deno", "bun", "dotnet",
+        "ruby", "rubyw", "perl", "php", "Rscript", "lua", "luajit",
     };
 
     /// <summary>Driver and hardware-utility folders under Program Files (only administrators can write there).</summary>
@@ -91,32 +105,36 @@ public sealed class ProcessRules
     private readonly string[] edgeFolders;
     private readonly string windowsAppsDir;
     private readonly Func<string, bool> isSystemOwned;
+    private readonly Func<string, bool> isConsoleProgram;
 
     /// <param name="allowedApps">Executable names from the parent's settings.</param>
     /// <param name="installDir">The Monitor v2 install folder (the agent runs from there).</param>
     /// <param name="isSystemOwned">Whether a file under C:\Windows is owned by the system (see <see cref="TrustedFiles"/>).</param>
+    /// <param name="isConsoleProgram">Whether an executable is a console program (default: <see cref="ExecutableImage.IsConsoleProgram"/>).</param>
     public ProcessRules(
         IEnumerable<string> allowedApps,
         string installDir,
         Func<string, bool> isSystemOwned,
         string? windowsDir = null,
         string? programFiles = null,
-        string? programFilesX86 = null)
+        string? programFilesX86 = null,
+        Func<string, bool>? isConsoleProgram = null)
     {
         this.allowedApps = new HashSet<string>(allowedApps.Select(NormalizeName).Where(n => n.Length > 0), StringComparer.OrdinalIgnoreCase);
         this.isSystemOwned = isSystemOwned;
+        this.isConsoleProgram = isConsoleProgram ?? ExecutableImage.IsConsoleProgram;
         this.windowsDir = AsFolder(windowsDir ?? Environment.GetFolderPath(Environment.SpecialFolder.Windows));
         var pf = programFiles ?? Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         var pf86 = programFilesX86 ?? Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        windowsAppsDir = AsFolder(Path.Combine(pf, "WindowsApps"));
+        windowsAppsDir = AsFolder(JoinPath(pf, "WindowsApps"));
         var folders = new List<string> { AsFolder(installDir) };
         foreach (var vendor in HardwareVendorFolders)
         {
-            folders.Add(AsFolder(Path.Combine(pf, vendor)));
-            if (!string.IsNullOrEmpty(pf86)) folders.Add(AsFolder(Path.Combine(pf86, vendor)));
+            folders.Add(AsFolder(JoinPath(pf, vendor)));
+            if (!string.IsNullOrEmpty(pf86)) folders.Add(AsFolder(JoinPath(pf86, vendor)));
         }
         trustedFolders = [.. folders];
-        edgeFolders = [.. EdgeFolders.SelectMany(f => new[] { pf, pf86 }.Where(d => !string.IsNullOrEmpty(d)).Select(d => AsFolder(Path.Combine(d!, f))))];
+        edgeFolders = [.. EdgeFolders.SelectMany(f => new[] { pf, pf86 }.Where(d => !string.IsNullOrEmpty(d)).Select(d => AsFolder(JoinPath(d!, f))))];
     }
 
     /// <summary>"Code.exe " → "Code".</summary>
@@ -135,9 +153,21 @@ public sealed class ProcessRules
         if (allowedApps.Contains(name)) return "allowed";
         if (IsTrustedPath(name, path)) return "trusted-path";
         if (ToolchainProcesses.Contains(name)) return "toolchain";
-        if (IsSpawnedByIde(pid, tree)) return "ide-child";
+        if (IsStudentProgram(pid, name, path, tree)) return "ide-child";
         return null;
     }
+
+    /// <summary>
+    /// A console program started from an IDE (up to <see cref="IdeAncestorDepth"/> levels down): what Code::Blocks
+    /// and VS Code produce for the student's exercises. Each process is judged by its own executable, so a
+    /// console program that launches a browser does not make the browser allowed. Script runtimes and
+    /// programs whose file can't be read are not covered.
+    /// </summary>
+    private bool IsStudentProgram(int pid, string name, string? path, IReadOnlyDictionary<int, ProcessEntry> tree) =>
+        !string.IsNullOrEmpty(path)
+        && !ScriptRuntimes.Contains(name)
+        && IsSpawnedByIde(pid, tree)
+        && isConsoleProgram(path);
 
     public bool IsTrustedPath(string name, string? path)
     {
@@ -180,6 +210,9 @@ public sealed class ProcessRules
         return null;
     }
 
-    private static string AsFolder(string path) =>
-        path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+    // Windows paths are built with '\' explicitly (not Path.Combine), so the rules behave the same when the
+    // unit tests run on another OS.
+    private static string JoinPath(string folder, string child) => folder.TrimEnd('\\', '/') + '\\' + child;
+
+    private static string AsFolder(string path) => path.TrimEnd('\\', '/') + '\\';
 }

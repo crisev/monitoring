@@ -81,8 +81,13 @@ public class ProcessRulesTests
     public void Toolchain_is_allowed() =>
         Assert.Equal("toolchain", Rules().AllowReason(1, "g++", @"C:\MinGW\bin\g++.exe", NoTree));
 
+    /// <summary>Rules where only the listed paths are console programs (everything else counts as windowed).</summary>
+    private static ProcessRules RulesWithConsole(string[] consolePaths, params string[] allowed) =>
+        new(allowed.Length > 0 ? allowed : ["msedge", "Code.exe", " notepad "], Install, _ => true, Windows, Pf, Pf86,
+            p => consolePaths.Contains(p, StringComparer.OrdinalIgnoreCase));
+
     [Fact]
-    public void Programs_started_from_an_IDE_are_allowed_up_to_four_levels()
+    public void Console_programs_started_from_an_IDE_are_allowed_up_to_four_levels()
     {
         var tree = new Dictionary<int, ProcessEntry>
         {
@@ -100,10 +105,60 @@ public class ProcessRulesTests
             [33] = new(33, 32, "x4"),
             [34] = new(34, 33, "x5"),
         };
-        Assert.Equal("ide-child", Rules().AllowReason(12, "main", @"C:\Users\kid\teme\main.exe", tree));
-        Assert.Null(Rules().AllowReason(24, "d", @"C:\Users\kid\d.exe", tree));
-        Assert.Equal("ide-child", Rules().AllowReason(33, "x4", null, tree));
-        Assert.Null(Rules().AllowReason(34, "x5", null, tree));
+        var rules = RulesWithConsole([@"C:\Users\kid\teme\main.exe", @"C:\Users\kid\d.exe", @"C:\Users\kid\x4.exe", @"C:\Users\kid\x5.exe"]);
+        Assert.Equal("ide-child", rules.AllowReason(12, "main", @"C:\Users\kid\teme\main.exe", tree));
+        Assert.Null(rules.AllowReason(24, "d", @"C:\Users\kid\d.exe", tree)); // console, but no IDE above it
+        Assert.Equal("ide-child", rules.AllowReason(33, "x4", @"C:\Users\kid\x4.exe", tree));
+        Assert.Null(rules.AllowReason(34, "x5", @"C:\Users\kid\x5.exe", tree)); // five levels down
+        Assert.Null(rules.AllowReason(33, "x4", null, tree)); // executable unknown
+    }
+
+    [Fact]
+    public void Windowed_programs_started_from_an_IDE_are_closed()
+    {
+        const string chrome = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
+        var tree = new Dictionary<int, ProcessEntry>
+        {
+            [10] = new(10, 1, "codeblocks"),
+            [11] = new(11, 10, "chrome"), // e.g. Tools menu or "Run" pointed at chrome.exe
+            [20] = new(20, 1, "Code"),
+            [21] = new(21, 20, "powershell"),
+            [22] = new(22, 21, "GeometryDash"),
+        };
+        var rules = RulesWithConsole([]);
+        Assert.Null(rules.AllowReason(11, "chrome", chrome, tree));
+        Assert.Null(rules.AllowReason(22, "GeometryDash", @"C:\Users\kid\Games\GeometryDash.exe", tree));
+        Assert.Equal("windows", rules.AllowReason(21, "powershell", @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", tree));
+    }
+
+    [Fact]
+    public void A_browser_launched_by_the_students_own_program_is_judged_on_its_own()
+    {
+        const string main = @"C:\Users\kid\teme\bin\Debug\main.exe";
+        var tree = new Dictionary<int, ProcessEntry>
+        {
+            [10] = new(10, 1, "codeblocks"),
+            [11] = new(11, 10, "cb_console_runner"),
+            [12] = new(12, 11, "main"),
+            [13] = new(13, 12, "chrome"),
+        };
+        var rules = RulesWithConsole([main]);
+        Assert.Equal("ide-child", rules.AllowReason(12, "main", main, tree));
+        Assert.Null(rules.AllowReason(13, "chrome", @"C:\Program Files\Google\Chrome\Application\chrome.exe", tree));
+    }
+
+    [Fact]
+    public void Script_runtimes_need_the_allowed_list_even_when_started_from_an_IDE()
+    {
+        const string java = @"C:\Program Files\Java\jdk-21\bin\java.exe";
+        var tree = new Dictionary<int, ProcessEntry>
+        {
+            [20] = new(20, 1, "Code"),
+            [21] = new(21, 20, "powershell"),
+            [22] = new(22, 21, "java"),
+        };
+        Assert.Null(RulesWithConsole([java]).AllowReason(22, "java", java, tree));
+        Assert.Equal("allowed", RulesWithConsole([java], "java").AllowReason(22, "java", java, tree));
     }
 
     [Fact]
