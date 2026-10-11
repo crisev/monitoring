@@ -136,6 +136,7 @@ button:hover { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 button.danger { background: var(--critical); border-color: var(--critical); color: #fff; }
+button.danger-outline { color: var(--critical-ink); border-color: var(--critical); }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .row > button { flex: 1 1 64px; }
 .action-group + .action-group { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }

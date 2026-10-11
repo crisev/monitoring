@@ -70,17 +70,44 @@ app.post('/grant', async (c) => {
   const g = parsed.data;
   const db = c.env.DB;
   const stored = await loadSettings(db);
-  const id = await addGrant(db, stored.settings, { bucket: g.bucket, seconds: g.minutes * 60, by: email, note: g.note }, now);
-  await logEvent(db, now, { type: 'grant', by: email, detail: { ledgerId: id, ...g } });
+  const res = await addGrant(db, stored.settings, { bucket: g.bucket, seconds: g.minutes * 60, by: email, note: g.note }, now);
+  if (res.id !== null) {
+    const applied = Math.round(res.seconds / 60);
+    await logEvent(db, now, { type: 'grant', by: email, detail: { ledgerId: res.id, ...g, minutes: applied, requested: g.minutes } });
+    const what = g.bucket === 'game' ? 'game time' : 'school/screen time today';
+    const tail = g.bucket === 'game' ? ` Game balance now ${minutes(await gameBalance(db))}.` : '';
+    c.executionCtx.waitUntil(
+      notify(c.env, `${applied > 0 ? '➕' : '➖'} **${applied > 0 ? '+' : ''}${applied}m ${what}** by ${email}${g.note ? ` — “${g.note}”` : ''}.${tail}`),
+    );
+  }
+  const day = await ensureDays(db, stored.settings, now);
+  return c.json({ ...(await todayView(db, stored, day, now)), appliedSeconds: res.seconds });
+});
 
-  const what = g.bucket === 'game' ? 'game time' : 'school/screen time today';
-  const tail = g.bucket === 'game' ? ` Game balance now ${minutes(await gameBalance(db))}.` : '';
-  const sign = g.minutes > 0 ? '+' : '';
+/** Ends gaming and sets the game balance to zero. */
+app.post('/clear-game', async (c) => {
+  const now = c.get('now');
+  const email = c.get('parentEmail');
+  const parsed = NoteBody.safeParse(await json(c));
+  if (!parsed.success) return c.json({ error: 'bad_request' }, 400);
+  const db = c.env.DB;
+  const stored = await loadSettings(db);
+  const closed = [];
+  for (const s of await openSessions(db)) {
+    const r = await stopSession(db, s, now, 'parent', email); // refunds the unused lease first…
+    if (r) closed.push(r);
+  }
+  // …so this removes everything that is left.
+  const res = await addGrant(db, stored.settings, { bucket: 'game', seconds: -1e12, by: email, note: parsed.data.note ?? 'all game time removed' }, now);
+  await logEvent(db, now, { type: 'clear_game', by: email, detail: { removedSeconds: -res.seconds, sessions: closed.length, note: parsed.data.note } });
+  const names = await deviceNames(db);
   c.executionCtx.waitUntil(
-    notify(c.env, `➕ **${sign}${g.minutes}m ${what}** by ${email}${g.note ? ` — “${g.note}”` : ''}.${tail}`),
+    announceClosed(c.env, closed, now, names).then(() =>
+      notify(c.env, `🚫 **All game time removed** by ${email} (${minutes(-res.seconds)})${parsed.data.note ? ` — “${parsed.data.note}”` : ''}.`),
+    ),
   );
   const day = await ensureDays(db, stored.settings, now);
-  return c.json(await todayView(db, stored, day, now));
+  return c.json({ ...(await todayView(db, stored, day, now)), appliedSeconds: res.seconds });
 });
 
 app.post('/end-gaming', async (c) => {

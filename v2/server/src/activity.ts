@@ -96,7 +96,7 @@ export async function activityReport(db: D1Database, from: string, to: string) {
     SUM(CASE WHEN mode = 'gaming' THEN fg_seconds ELSE 0 END) AS gaming,
     SUM(audio_seconds) AS audio, SUM(blocked) AS blocked`;
 
-  const [totals, apps, sites, titles, perDay, slots] = await db.batch([
+  const [totals, apps, sites, titles, perDay, slots, sound] = await db.batch([
     range(`SELECT ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2`),
     range(`SELECT app, ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2 GROUP BY app ORDER BY seconds DESC, blocked DESC LIMIT 50`),
     range(`SELECT site, ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2 AND site != '' GROUP BY site ORDER BY seconds DESC LIMIT 50`),
@@ -112,6 +112,11 @@ export async function activityReport(db: D1Database, from: string, to: string) {
          WHERE day = ?1 AND ?1 = ?2 AND fg_seconds > 0 GROUP BY slot, mode, app ORDER BY slot`,
       )
       .bind(from, to),
+    // What played sound, foreground or background (e.g. a video left playing behind another window).
+    range(
+      `SELECT app, site, title, ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2 AND audio_seconds > 0
+       GROUP BY app, site, title ORDER BY audio DESC LIMIT 20`,
+    ),
   ]);
 
   const t = (totals.results[0] ?? {}) as Partial<Totals>;
@@ -140,6 +145,7 @@ export async function activityReport(db: D1Database, from: string, to: string) {
     apps: apps.results as (Totals & { app: string })[],
     sites: sites.results as (Totals & { site: string })[],
     titles: titles.results as (Totals & { app: string; site: string; title: string })[],
+    sound: sound.results as (Totals & { app: string; site: string; title: string })[],
     perDay: perDay.results as (Totals & { day: string })[],
     timeline: [...timeline.values()].map(({ slot, seconds, gaming, topApp }) => ({
       slot,

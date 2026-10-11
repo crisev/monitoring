@@ -136,6 +136,38 @@ describe('http api', () => {
     expect(await act.json()).toMatchObject({ ok: true, stored: 1, dropped: 0 });
   });
 
+  it('removing time stops at zero, and "remove all" also ends gaming', async () => {
+    const token = await enrollPc();
+    await call(LOCAL, '/api/parent/grant', { json: { bucket: 'game', minutes: 20 } });
+    const minus = (await (await call(LOCAL, '/api/parent/grant', { json: { bucket: 'game', minutes: -30 } })).json()) as {
+      appliedSeconds: number;
+      game: { balanceSeconds: number };
+    };
+    expect(minus).toMatchObject({ appliedSeconds: -1200, game: { balanceSeconds: 0 } });
+
+    await call(LOCAL, '/api/parent/grant', { json: { bucket: 'game', minutes: 30 } });
+    const started = (await (await call(REMOTE, '/api/device/game/start', { method: 'POST', token })).json()) as { session: { id: string } };
+    const cleared = await call(LOCAL, '/api/parent/clear-game', { json: { note: 'bedtime' } });
+    expect(await cleared.json()).toMatchObject({ gaming: [], game: { balanceSeconds: 0 } });
+    const hb = await call(REMOTE, '/api/device/heartbeat', { json: { screenActive: true, sessionId: started.session.id }, token });
+    expect(await hb.json()).toMatchObject({ mode: 'school', game: { balanceSeconds: 0 } });
+  });
+
+  it('reports what played sound, including background apps', async () => {
+    const token = await enrollPc();
+    await call(REMOTE, '/api/device/activity', {
+      json: {
+        items: [
+          { secondsAgo: 0, mode: 'school', app: 'Code', title: 'main.cpp', seconds: 60 },
+          { secondsAgo: 0, mode: 'school', app: 'msedge', audioSeconds: 60 },
+        ],
+      },
+      token,
+    });
+    const report = (await (await call(LOCAL, '/api/parent/activity')).json()) as { sound: { app: string; audio: number }[] };
+    expect(report.sound).toEqual([expect.objectContaining({ app: 'msedge', audio: 60 })]);
+  });
+
   it('settings are validated and versioned', async () => {
     const bad = await call(LOCAL, '/api/parent/settings', { method: 'PUT', json: { dailyGameMinutes: -5 } });
     expect(bad.status).toBe(400);

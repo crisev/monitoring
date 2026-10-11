@@ -128,11 +128,23 @@ async function renderToday() {
         h('a', { href: '#devices', class: 'small' }, 'Add the PC'));
 
   const note = h('input', { type: 'text', placeholder: 'Note (optional), e.g. “homework done”', maxlength: '200', 'aria-label': 'Note' });
+  const what = (bucket) => (bucket === 'game' ? 'game time' : 'school time today');
   const grant = (bucket, minutes) => async (ev) =>
     act(ev.currentTarget, async () => {
-      await api('/grant', { method: 'POST', body: { bucket, minutes, note: note.value || undefined } });
+      const res = await api('/grant', { method: 'POST', body: { bucket, minutes, note: note.value || undefined } });
       note.value = '';
-      toast(`${minutes > 0 ? '+' : ''}${minutes} min ${bucket === 'game' ? 'game time' : 'school time today'}`);
+      const applied = Math.round(res.appliedSeconds / 60);
+      if (applied === 0) toast(`Nothing to remove: no ${what(bucket)} left`);
+      else if (applied !== minutes) toast(`Removed ${-applied} min ${what(bucket)} (all that was left)`);
+      else toast(`${minutes > 0 ? '+' : ''}${minutes} min ${what(bucket)}`);
+      await render();
+    });
+  const clearGame = (ev) =>
+    act(ev.currentTarget, async () => {
+      if (!confirm('Remove all game time? Gaming ends now and the balance becomes 0.')) return;
+      const res = await api('/clear-game', { method: 'POST', body: { note: note.value || undefined } });
+      note.value = '';
+      toast(res.appliedSeconds ? `Removed ${dur(-res.appliedSeconds)} of game time` : 'Game time was already 0');
       await render();
     });
   const custom = (bucket) => {
@@ -154,6 +166,9 @@ async function renderToday() {
         h('button', { class: 'primary', onclick: grant('game', 15) }, '+15'),
         h('button', { class: 'primary', onclick: grant('game', 30) }, '+30'),
         h('button', { class: 'primary', onclick: grant('game', 60) }, '+60')),
+      h('div', { class: 'row', style: 'margin-top:8px' },
+        h('button', { onclick: grant('game', -15) }, '−15'),
+        h('button', { class: 'danger-outline', onclick: clearGame }, 'Remove all')),
       custom('game')),
     h('div', { class: 'action-group' },
       h('div', { class: 'action-title' }, 'School time', h('span', { class: 'muted small' }, ' · today only')),
@@ -225,6 +240,7 @@ function describeEvent(e) {
     case 'game_end': return `Gaming ended: ${END_REASON[d.reason] ?? d.reason}, played ${dur(d.usedSeconds ?? 0)}`;
     case 'grant': return `${d.minutes > 0 ? '+' : ''}${d.minutes}m ${d.bucket === 'game' ? 'game time' : 'school time'}${d.note ? ` — “${d.note}”` : ''}`;
     case 'end_gaming': return `Ended gaming${d.note ? ` — “${d.note}”` : ''}`;
+    case 'clear_game': return `Removed all game time (${dur(d.removedSeconds ?? 0)})${d.note ? ` — “${d.note}”` : ''}`;
     case 'settings': return `Settings changed (v${d.version})`;
     case 'device_added': return 'PC added';
     case 'device_reset': return 'New enrollment code issued';
@@ -386,6 +402,11 @@ async function renderActivity() {
         h('div', { class: 'card' }, barList(r.apps.filter((a) => a.seconds > 0), (a) => a.app)),
         h('h2', {}, 'Websites'),
         h('div', { class: 'card' }, r.sites.length ? barList(r.sites, (s) => s.site) : h('span', { class: 'muted' }, 'No websites recorded.')),
+        r.sound?.length && h('h2', {}, 'Playing sound'),
+        r.sound?.length && h('div', { class: 'card' },
+          h('p', { class: 'muted small', style: 'margin:0 0 8px' }, 'Includes sound from windows in the background, e.g. a video left playing.'),
+          h('ul', { class: 'list' }, r.sound.map((x) =>
+            listItem(x.title || x.site || x.app, h('span', { class: 'num' }, dur2(x.audio)), [x.app, x.site].filter(Boolean).join(' · '))))),
         h('h2', {}, 'Window titles'),
         h('div', { class: 'card' }, r.titles.length
           ? h('ul', { class: 'list' }, r.titles.map((x) => listItem(x.title, h('span', { class: 'num' }, dur2(x.seconds)), [x.app, x.site].filter(Boolean).join(' · '))))

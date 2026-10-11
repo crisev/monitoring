@@ -59,4 +59,12 @@ describe('day rollover', () => {
     const row = await db().prepare(`SELECT kind FROM ledger WHERE by = 'dad'`).first<{ kind: string }>();
     expect(row!.kind).toBe('adjustment');
   });
+
+  it('removing game time stops at zero', async () => {
+    const { settings } = await useSettings({ dailyGameMinutes: 20 });
+    expect(await addGrant(db(), settings, { bucket: 'game', seconds: -30 * 60, by: 'dad' }, T0)).toMatchObject({ seconds: -20 * 60 });
+    expect(await gameBalance(db())).toBe(0);
+    expect(await addGrant(db(), settings, { bucket: 'game', seconds: -10 * 60, by: 'dad' }, T0)).toEqual({ id: null, seconds: 0 });
+    expect(await gameBalance(db())).toBe(0);
+  });
 });

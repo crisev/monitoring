@@ -53,6 +53,15 @@ describe('screen time', () => {
     expect(await screenStatus(db(), settings, tomorrow)).toMatchObject({ limitSeconds: 180 * 60, usedSeconds: 0 });
   });
 
+  it('taking school time never makes the limit negative', async () => {
+    const pc = await makeDevice();
+    const day = await beat(pc, T0, 0);
+    expect(await addGrant(db(), settings, { bucket: 'screen', seconds: -200 * 60, by: 'mom' }, T0)).toMatchObject({ seconds: -180 * 60 });
+    expect((await screenStatus(db(), settings, day)).limitSeconds).toBe(0);
+    await addGrant(db(), settings, { bucket: 'screen', seconds: 15 * 60, by: 'mom' }, T0);
+    expect((await screenStatus(db(), settings, day)).limitSeconds).toBe(15 * 60);
+  });
+
   it('0 means no limit', async () => {
     settings = (await useSettings({ dailyScreenMinutes: 0 })).settings;
     const pc = await makeDevice();

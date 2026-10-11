@@ -84,16 +84,57 @@ export interface GrantInput {
   note?: string | null;
 }
 
-/** Parent grant (positive) or correction (negative). */
-export async function addGrant(db: D1Database, settings: Settings, input: GrantInput, now: number): Promise<number> {
+export interface GrantResult {
+  /** Ledger row, or null if nothing changed (e.g. removing time when none is left). */
+  id: number | null;
+  /** Seconds actually added (negative = removed); can be less than asked when removing. */
+  seconds: number;
+}
+
+/**
+ * Parent grant (positive) or correction (negative). Removing never takes a balance below zero:
+ * game time stops at 0, and today's screen-time limit stops at 0.
+ */
+export async function addGrant(db: D1Database, settings: Settings, input: GrantInput, now: number): Promise<GrantResult> {
   const day = await ensureDays(db, settings, now);
-  const kind = input.seconds >= 0 ? 'grant' : 'adjustment';
+  if (input.seconds >= 0) {
+    if (input.seconds === 0) return { id: null, seconds: 0 };
+    const row = await db
+      .prepare(
+        `INSERT INTO ledger (bucket, day, kind, seconds, by, note, created_at)
+         VALUES (?1, ?2, 'grant', ?3, ?4, ?5, ?6) RETURNING id`,
+      )
+      .bind(input.bucket, day, input.seconds, input.by, input.note ?? null, now)
+      .first<{ id: number }>();
+    return { id: row!.id, seconds: input.seconds };
+  }
+
+  if (input.bucket === 'game') {
+    // Clamped in SQL, so two parents removing time at the same moment can't push the balance below zero.
+    const row = await db
+      .prepare(
+        `INSERT INTO ledger (bucket, day, kind, seconds, by, note, created_at)
+         SELECT 'game', ?1, 'adjustment', s, ?3, ?4, ?5
+         FROM (SELECT MAX(?2, -MAX(0, COALESCE(SUM(seconds), 0))) AS s FROM ledger WHERE bucket = 'game')
+         WHERE s < 0
+         RETURNING id, seconds`,
+      )
+      .bind(day, input.seconds, input.by, input.note ?? null, now)
+      .first<{ id: number; seconds: number }>();
+    return row ? { id: row.id, seconds: row.seconds } : { id: null, seconds: 0 };
+  }
+
+  // Screen time: today's limit is the daily limit plus today's extra; it can't go below zero.
+  if (settings.dailyScreenMinutes === 0) return { id: null, seconds: 0 }; // no limit: nothing to take
+  const limit = settings.dailyScreenMinutes * 60 + (await screenExtraOn(db, day));
+  const seconds = Math.max(input.seconds, -Math.max(0, limit));
+  if (seconds === 0) return { id: null, seconds: 0 };
   const row = await db
     .prepare(
       `INSERT INTO ledger (bucket, day, kind, seconds, by, note, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id`,
+       VALUES ('screen', ?1, 'adjustment', ?2, ?3, ?4, ?5) RETURNING id`,
     )
-    .bind(input.bucket, day, kind, input.seconds, input.by, input.note ?? null, now)
+    .bind(day, seconds, input.by, input.note ?? null, now)
     .first<{ id: number }>();
-  return row!.id;
+  return { id: row!.id, seconds };
 }

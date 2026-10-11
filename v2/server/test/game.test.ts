@@ -128,5 +128,5 @@ describe('game sessions', () => {
       expect(used!.s).toBeLessThanOrEqual(initial);
       expect(used!.s + (await gameBalance(db()))).toBe(initial);
     }
-  });
+  }, 30_000); // many database round trips; can exceed the default 5 s when the suite runs in parallel
 });
