@@ -30,7 +30,7 @@
         "ACCESS_TEAM_DOMAIN": "https://small-union-8ae5.cloudflareaccess.com/cdn-cgi/access/certs",
         "ACCESS_AUD": "3ee70f290bfd4993ae2c7f314ba852e8ef47b90d088def9653961b3e6fe1b578",
         // Comma-separated. Second check on top of the Access policy.
-        "PARENT_EMAILS": "sevescu.cristian@gmail.com"
+        "PARENT_EMAILS": "sevescu.cristian@gmail.com, kabunta@gmail.com"
       },
       "d1_databases": [
         { "binding": "DB", "database_name": "monitor", "database_id": "d0a39865-70f8-4829-8fcf-97a66212449f", "migrations_dir": "migrations" }
