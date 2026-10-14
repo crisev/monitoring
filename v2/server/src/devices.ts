@@ -10,6 +10,11 @@ export interface Device {
   silent_alerted_at: number | null;
   client_version: string | null;
   revoked: number;
+  target_version: string | null;
+  update_requested_at: number | null;
+  update_status: string | null;
+  update_message: string | null;
+  update_at: number | null;
 }
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
@@ -109,6 +114,9 @@ export function deviceView(d: Device, now: number) {
     online: d.last_heartbeat_at !== null && now - d.last_heartbeat_at < 90_000,
     screenActive: d.last_screen_active === 1,
     clientVersion: d.client_version,
+    update: d.target_version
+      ? { version: d.target_version, status: d.update_status, message: d.update_message, at: d.update_at }
+      : null,
     enrolled: d.token_hash !== null,
     enrollPending: d.enroll_code_hash !== null && (d.enroll_expires_at ?? 0) > now,
     revoked: d.revoked === 1,

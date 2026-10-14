@@ -138,7 +138,7 @@ Secrets are stored encrypted by Cloudflare and are never in git or on the PC.
 
 Web app → **PCs → Add PC** gives a code valid for 30 minutes, for one use.
 
-Install the Windows client with that code: see [`../client/README.md`](../client/README.md). In short, build with `v2\client\publish.ps1`, copy `dist\MonitorV2` to the PC, and in an administrator PowerShell run:
+Install the Windows client with that code. **Follow [`INSTALL_PC.md`](INSTALL_PC.md)**, which goes step by step from getting the package to turning enforcement on. In short, copy the `MonitorV2` package to the PC, and in an administrator PowerShell run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerUrl https://monitor-device.<your-subdomain>.workers.dev -Code <CODE> -DryRun
@@ -165,6 +165,14 @@ The workflow `.github/workflows/v2-server.yml` runs the tests on every push that
 | `CLOUDFLARE_ACCOUNT_ID` | Dashboard → Workers & Pages, right-hand column |
 
 Without them, the deploy step is skipped and only the tests run.
+
+The workflow `.github/workflows/v2-client.yml` builds and tests the Windows client. On pushes to `main` it also publishes a GitHub Release `client-v<version>`, which the PCs page offers as an update. It needs no secrets.
+
+**Optional: `GITHUB_TOKEN` Worker secret.** The server checks GitHub for new client releases once an hour. Without a token GitHub allows 60 requests an hour per address, and Cloudflare shares addresses, so a check can fail with 403 (the PCs page then shows the error). To avoid that, create a fine-grained token with no permissions (GitHub → Settings → Developer settings → Fine-grained tokens, *Public repositories (read-only)*) and set it:
+
+```sh
+npx wrangler secret put GITHUB_TOKEN --env parent
+```
 
 ## Updating after code changes
 

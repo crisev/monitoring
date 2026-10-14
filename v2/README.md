@@ -4,6 +4,8 @@ A rewrite of the monitor where **the server, not the PC, owns the time**. See [`
 
 The original app at the repository root is not changed by v2.
 
+**Installing on a PC:** [`docs/INSTALL_PC.md`](docs/INSTALL_PC.md).
+
 | Folder | What | Status |
 |---|---|---|
 | `server/` | Cloudflare Worker (TypeScript, Hono, D1): time ledger, game leases, device + parent API, Discord proxy, cron | ✅ Phase 1 |
@@ -59,9 +61,16 @@ All calls send `Authorization: Bearer <device token>`, except `enroll`.
   "game":   { "balanceSeconds": 2640, "usedTodaySeconds": 960 },
   "screen": { "limitSeconds": 10800, "usedSeconds": 4200, "remainingSeconds": 6600, "extraSeconds": 0 }, // null limit = none
   "configVersion": 3,                                // re-fetch /config when it changes
-  "timing": { "heartbeatSeconds": 30, "leaseSeconds": 90, "offlineBudgetSeconds": 3600 }
+  "timing": { "heartbeatSeconds": 30, "leaseSeconds": 90, "offlineBudgetSeconds": 3600 },
+  "update": { "id": "0.1.12@1791…", "version": "0.1.12", "url": "https://github.com/…/MonitorV2-0.1.12.zip",
+              "sha256": "…", "size": 68157440 }      // null unless a parent clicked Update and the PC is older
 }
 ```
+
+**Update events** (`POST /api/device/events`) set the PC's update status on the PCs page:
+- `update_started { from, to }`
+- `updated { from, to }`: posted to Discord
+- `update_failed { to, reason }`: posted to Discord; no more offers until a parent clicks Update again
 
 **Out-of-range values are not rejected.**
 - Numbers are clamped and texts are shortened (app 100, site 300, title 1000, event type 50 characters, `screenSeconds` at most 86,400).

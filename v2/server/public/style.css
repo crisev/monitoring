@@ -124,6 +124,7 @@ h2:first-child { margin-top: 0; }
 .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .status.good::before { background: var(--good); }
 .status.crit::before { background: var(--critical); }
+.bad { color: var(--critical); }
 
 /* Controls */
 button, .btn {

@@ -248,6 +248,12 @@ function describeEvent(e) {
     case 'enrolled': return 'PC enrolled';
     case 'enroll_failed': return 'Wrong enrollment code entered';
     case 'pc_silent': return 'PC went silent while in use';
+    case 'update_requested': return `Update to ${d.version} requested`;
+    case 'update_cancelled': return 'Update cancelled';
+    case 'release_found': return `New PC version available: ${(d.versions ?? []).join(', ')}`;
+    case 'pc:update_started': return `Installing version ${d.to}`;
+    case 'pc:updated': return `Updated to ${d.to}${d.from ? ` (from ${d.from})` : ''}`;
+    case 'pc:update_failed': return `Update to ${d.to} failed: ${d.reason ?? 'unknown error'}`;
     default: return `${e.type}${e.detail ? `: ${e.detail}` : ''}`;
   }
 }
@@ -481,8 +487,85 @@ function codeCard(res, title) {
     h('div', { class: 'muted small' }, `Enter this code in the installer on the PC. Valid until ${when(res.expiresAt, false)}, one use.`));
 }
 
+const UPDATE_STATUS = {
+  requested: 'waiting for the PC (it installs when not gaming)',
+  installing: 'installing…',
+  done: 'installed',
+  failed: 'failed',
+};
+
+/** Compares "0.1.12"-style versions: negative if a < b. */
+function compareVersions(a, b) {
+  const pa = String(a ?? '').split('+')[0].split('.').map(Number);
+  const pb = String(b ?? '').split('+')[0].split('.').map(Number);
+  if (pa.some(isNaN) || pb.some(isNaN)) return (pb.some(isNaN) ? 1 : 0) - (pa.some(isNaN) ? 1 : 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+/** Version line, update status and the Update / Cancel buttons of one PC. */
+function updateSection(d, latest) {
+  const u = d.update;
+  const newer = latest && d.enrolled && compareVersions(latest.version, d.clientVersion) > 0;
+  const pending = u && (u.status === 'requested' || u.status === 'installing');
+  const parts = [];
+  if (u && u.status !== 'done' && (pending || u.status === 'failed')) {
+    parts.push(h('div', { class: `small ${u.status === 'failed' ? 'bad' : 'muted'}` },
+      `Update to ${u.version}: ${UPDATE_STATUS[u.status] ?? u.status}${u.message ? ` — ${u.message}` : ''}${u.at ? ` (${ago(u.at)})` : ''}`));
+  }
+  const buttons = [];
+  if (newer && !pending) {
+    buttons.push(h('button', {
+      class: 'primary',
+      onclick: (ev) => act(ev.currentTarget, async () => {
+        if (!confirm(`Update ${d.name} to version ${latest.version}? It installs within a minute or two (not while gaming) and goes back to ${d.clientVersion} if the new version fails to start.`)) return;
+        await api(`/devices/${d.id}/update`, { method: 'POST', body: { version: latest.version } });
+        toast(`Update to ${latest.version} requested`);
+        await renderDevices();
+      }),
+    }, `${u?.status === 'failed' && u.version === latest.version ? 'Try again' : 'Update'} to ${latest.version}`));
+  }
+  if (u && u.status === 'requested') {
+    buttons.push(h('button', {
+      onclick: (ev) => act(ev.currentTarget, async () => {
+        await api(`/devices/${d.id}/update`, { method: 'POST', body: { version: null } });
+        toast('Update cancelled');
+        await renderDevices();
+      }),
+    }, 'Cancel update'));
+  }
+  if (buttons.length) parts.push(h('div', { class: 'row' }, buttons));
+  return parts;
+}
+
+function releaseCard(latest, check) {
+  const checkBtn = h('button', {
+    onclick: (ev) => act(ev.currentTarget, async () => {
+      try {
+        const res = await api('/releases/check', { method: 'POST', body: {} });
+        toast(res.added.length ? `Found ${res.added.join(', ')}` : 'No new version');
+      } finally {
+        await renderDevices();
+      }
+    }),
+  }, 'Check now');
+  return h('div', { class: 'card stack' },
+    h('div', { class: 'row', style: 'justify-content:space-between' },
+      h('span', {}, latest ? `Newest PC version: ${latest.version}` : 'No PC version released yet'),
+      checkBtn),
+    h('div', { class: 'muted small' },
+      [
+        latest && `released ${when(latest.publishedAt)}`,
+        check.at ? `checked GitHub ${ago(check.at)}` : 'GitHub not checked yet',
+      ].filter(Boolean).join(' · ')),
+    check.error && h('div', { class: 'small bad' }, `Last check failed: ${check.error}`));
+}
+
 async function renderDevices() {
-  const { items } = await api('/devices');
+  const { items, latestRelease, releaseCheck } = await api('/devices');
   const result = h('div');
 
   const rows = items.map((d) =>
@@ -496,6 +579,7 @@ async function renderDevices() {
           d.clientVersion && `version ${d.clientVersion}`,
           d.lastHeartbeatAt && `last contact ${ago(d.lastHeartbeatAt)}`,
         ].filter(Boolean).join(' · ')),
+      updateSection(d, latestRelease),
       h('div', { class: 'row' },
         h('button', {
           onclick: (ev) => act(ev.currentTarget, async () => {
@@ -527,6 +611,8 @@ async function renderDevices() {
   result.id = 'enroll-result';
   view.replaceChildren(
     h('div', { class: 'stack' }, rows.length ? rows : h('p', { class: 'muted' }, 'No PCs yet.')),
+    h('h2', {}, 'PC software'),
+    releaseCard(latestRelease, releaseCheck),
     h('h2', {}, 'Add a PC'),
     h('div', { class: 'card' }, h('div', { class: 'row' }, name, add)),
     result,

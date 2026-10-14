@@ -1,5 +1,9 @@
 name: v2 client
 
+# Builds and tests the Windows client on every change. Pushes to main (and manual runs) also publish a
+# GitHub Release "client-v<version>" with MonitorV2-<version>.zip and its .sha256. The server finds it
+# within an hour (or with "Check now" on the PCs page), and a parent then clicks Update for each PC.
+
 on:
   push:
     paths:
@@ -8,6 +12,10 @@ on:
   pull_request:
     paths:
       - 'v2/client/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write # create releases
 
 defaults:
   run:
@@ -21,13 +29,41 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+
+      - name: Version
+        id: version
+        shell: pwsh
+        # major.minor from Directory.Build.props, patch = this workflow's run number (always increases).
+        run: |
+          [xml] $props = Get-Content Directory.Build.props
+          $base = [version] ($props.Project.PropertyGroup.Version | Select-Object -First 1)
+          $version = "$($base.Major).$($base.Minor).${{ github.run_number }}"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $version"
+
       - run: dotnet test MonitorV2.sln -c Release
+
       - name: Publish
         shell: pwsh
-        run: ./publish.ps1
+        run: ./publish.ps1 -Version ${{ steps.version.outputs.version }} -Zip
+
       # Download from the run's Summary page; copy the MonitorV2 folder to the PC and run install.ps1.
       - uses: actions/upload-artifact@v4
         with:
-          name: MonitorV2
+          name: MonitorV2-${{ steps.version.outputs.version }}
           path: v2/client/dist/MonitorV2
           retention-days: 30
+
+      - name: GitHub Release
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $zip = "dist/MonitorV2-$version.zip"
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  MonitorV2-$version.zip" | Set-Content "$zip.sha256" -NoNewline -Encoding ascii
+          $notes = "Windows client $version (commit ${{ github.sha }}).`n`nSHA-256: $hash`n`nInstall by hand: unzip, then run MonitorV2\install.ps1 as administrator. Or click Update on the web app's PCs page."
+          # --latest=false: the original app's releases stay the repository's "latest".
+          gh release create "client-v$version" $zip "$zip.sha256" --title "PC client $version" --notes $notes --target "${{ github.sha }}" --latest=false

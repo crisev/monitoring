@@ -15,6 +15,8 @@ public sealed class DeviceState
     public ScreenStatus Screen { get; set; } = new();
     public int ConfigVersion { get; set; }
     public Timing Timing { get; set; } = new();
+    /// <summary>A newer version a parent asked this PC to install, or null.</summary>
+    public UpdateOffer? Update { get; set; }
 
     public bool IsGaming => Mode == "gaming" && Session is not null;
 }

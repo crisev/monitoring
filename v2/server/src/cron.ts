@@ -7,6 +7,7 @@ import { logEvent } from './events';
 import { closeExpired } from './game';
 import { ensureDays } from './ledger';
 import { announceClosed } from './sessions-notify';
+import { checkReleases } from './releases';
 import { loadSettings } from './settings';
 import { clock } from './time';
 
@@ -36,4 +37,7 @@ export async function runCron(env: Env, now: number): Promise<void> {
         `Turned off, offline, or tampered with?`,
     );
   }
+
+  // New Windows client releases on GitHub (at most once an hour).
+  await checkReleases(env, now);
 }

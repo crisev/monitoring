@@ -25,6 +25,8 @@ dotnet test                 # unit tests
 
 ## Install on a PC
 
+For a step-by-step guide (getting the package, test mode, checks, troubleshooting) see **[`../docs/INSTALL_PC.md`](../docs/INSTALL_PC.md)**. Short version:
+
 1. In the web app: **PCs → Add PC** and copy the code (valid 30 minutes).
 2. Copy `dist\MonitorV2` to the PC. In an **administrator** PowerShell there:
    ```powershell
@@ -37,7 +39,19 @@ What the script does:
 - enrolls the PC; the device token goes to `C:\ProgramData\MonitorV2`, readable only by SYSTEM and Administrators
 - registers the `MonitorV2` service: automatic start, restarted after 5 s if it stops
 
-**Update:** run `.\install.ps1` again from a newer `dist\MonitorV2`, without `-Code`. The enrollment is kept. (Automatic updates are Phase 3.)
+**Update by hand:** run `.\install.ps1` again from a newer `dist\MonitorV2`, without `-Code`. The enrollment is kept.
+
+### Automatic updates
+
+1. **Release.** Every client change pushed to `main` (or a manual run of the *v2 client* workflow) builds version `<major.minor>.<run number>` and publishes a GitHub Release `client-v<version>` with `MonitorV2-<version>.zip` and its `.sha256`. Change major/minor in `Directory.Build.props`.
+2. **Server.** It checks GitHub about once an hour (or **PCs → Check now**) and posts "New PC version … available" to Discord.
+3. **You click Update** on the PC's card. At its next heartbeat (≤ 30 s), when it isn't gaming, the PC:
+   - downloads the zip into `C:\ProgramData\MonitorV2\updates` (SYSTEM/Administrators only)
+   - checks the size and SHA-256 the server announced, and that the program inside has that version; anything else is refused
+   - runs `update.ps1` as SYSTEM, using the copy from the version installed *now*. The script stops the service, backs up `Program Files\MonitorV2`, copies the new files and starts the service. The enrollment and saved state in ProgramData are not touched.
+4. **Rollback.** If the new version doesn't reach the server within 2 minutes, the script puts the backup back and starts the old version. Discord then shows "update to … failed (rolled back …)"; otherwise "updated to …". The PCs page shows the status, and **Try again** asks again.
+
+The update log is `C:\ProgramData\MonitorV2\logs\update-*.log`. Automatic updates work from the first version that includes them: install such a version by hand once.
 
 **Uninstall:** `.\uninstall.ps1` stops and removes the service, removes the Edge policies, and deletes the program and `C:\ProgramData\MonitorV2`. Add `-KeepData` to keep the enrollment.
 
@@ -86,4 +100,5 @@ On the test account, with test mode off. Each case is passed when game time used
 - **Console programs started from an IDE are allowed**, so he can run his own exercises. A console game started from Code::Blocks or VS Code's terminal would therefore run (rare: browsers and games are windowed). Windowed programs he writes himself (SFML, raylib) are closed; if he needs them, they would need an extra rule (e.g. unsigned windowed programs from his projects folder).
 - **A new day while offline:** screen time counts down from the last server value (yesterday's) until the PC reaches the server.
 - **Apps installed per user** (OneDrive, Discord, Spotify, Logitech tools in `AppData`) are closed in School mode unless they are on the Allowed apps list. Check the test-mode log.
-- No automatic updates yet (Phase 3: `Monitor.Updater`).
+- Updates trust whatever is released on the GitHub repository: the SHA-256 catches damaged or swapped downloads, not a bad release. Anyone who can push to `main` can ship a version (it still needs your Update click per PC). The binaries are not code-signed.
+- If `update.ps1` itself is killed halfway (e.g. the PC is switched off during the ~30 s it runs), the service can be left stopped until the next reboot (it starts automatically then).

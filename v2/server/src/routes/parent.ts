@@ -11,6 +11,7 @@ import { logEvent } from '../events';
 import { closeExpired, openSessions, stopSession } from '../game';
 import { addGrant, ensureDays, gameBalance } from '../ledger';
 import { announceClosed } from '../sessions-notify';
+import { checkReleases, compareVersions, getRelease, lastReleaseCheck, listReleases, requestUpdate } from '../releases';
 import { loadSettings, saveSettings, SettingsSchema } from '../settings';
 import { todayView } from '../state';
 import { dayOf } from '../time';
@@ -33,6 +34,7 @@ const GrantBody = z.object({
 });
 const NoteBody = z.object({ note: z.string().trim().max(200).optional() }).default({});
 const DeviceBody = z.object({ name: z.string().trim().min(1).max(60) });
+const UpdateBody = z.object({ version: z.string().trim().max(40).nullable() });
 const Paging = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
   before: z.coerce.number().int().optional(),
@@ -180,7 +182,42 @@ app.get('/events', async (c) => {
 
 app.get('/devices', async (c) => {
   const now = c.get('now');
-  return c.json({ items: (await listDevices(c.env.DB)).filter((d) => d.revoked === 0).map((d) => deviceView(d, now)) });
+  const db = c.env.DB;
+  const latest = (await listReleases(db))[0] ?? null;
+  return c.json({
+    items: (await listDevices(db)).filter((d) => d.revoked === 0).map((d) => deviceView(d, now)),
+    latestRelease: latest && { version: latest.version, publishedAt: latest.published_at, notes: latest.notes },
+    releaseCheck: await lastReleaseCheck(db),
+  });
+});
+
+/** Ask GitHub for new client releases now (the cron does it hourly). */
+app.post('/releases/check', async (c) => {
+  const res = await checkReleases(c.env, c.get('now'), { force: true });
+  return c.json(res, res.error ? 502 : 200);
+});
+
+/** "Update": the PC installs this version at its next heartbeat, when not gaming. version null cancels. */
+app.post('/devices/:id/update', async (c) => {
+  const now = c.get('now');
+  const db = c.env.DB;
+  const parsed = UpdateBody.safeParse(await json(c));
+  if (!parsed.success) return c.json({ error: 'bad_request', issues: parsed.error.issues }, 400);
+  const { version } = parsed.data;
+  const device = (await listDevices(db)).find((d) => d.id === c.req.param('id') && d.revoked === 0);
+  if (!device) return c.json({ error: 'not_found' }, 404);
+  if (version !== null) {
+    if (!(await getRelease(db, version))) return c.json({ error: 'unknown_version' }, 400);
+    if (compareVersions(version, device.client_version) <= 0) return c.json({ error: 'not_newer' }, 400);
+  }
+  await requestUpdate(db, device.id, version, now);
+  await logEvent(db, now, {
+    type: version ? 'update_requested' : 'update_cancelled',
+    deviceId: device.id,
+    by: c.get('parentEmail'),
+    detail: { version },
+  });
+  return c.json({ ok: true });
 });
 
 app.post('/devices', async (c) => {

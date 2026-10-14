@@ -52,8 +52,10 @@ internal sealed partial class MonitorWorker
                         nextHeartbeat = Environment.TickCount64 + (ok ? HeartbeatIntervalMs() : RetryMs);
                         if (ok)
                         {
+                            ConfirmUpdate();
                             await SyncConfigAsync(ct);
                             await FlushAsync(ct);
+                            MaybeStartUpdate(ct);
                         }
                         break;
                     case "heartbeat":

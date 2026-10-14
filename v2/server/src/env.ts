@@ -13,6 +13,10 @@ export interface Env {
   DEV_PARENT_EMAIL?: string;
   DISCORD_TEXT_WEBHOOK?: string;
   DISCORD_IMAGE_WEBHOOK?: string;
+  /** "owner/repo" whose GitHub Releases hold the Windows client (default crisev/monitoring). */
+  GITHUB_REPO?: string;
+  /** Optional secret: raises GitHub's API limit for the release check (any token, no scopes needed). */
+  GITHUB_TOKEN?: string;
 }
 
 /** Timing contract shared with the PC client. */

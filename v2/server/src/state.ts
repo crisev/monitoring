@@ -4,6 +4,7 @@ import { deviceView, listDevices } from './devices';
 import type { GameSession } from './game';
 import { openSessions } from './game';
 import { gameBalance, gameUsedOn } from './ledger';
+import { updateOffer } from './releases';
 import { screenStatus } from './screen';
 import type { StoredSettings } from './settings';
 
@@ -36,6 +37,8 @@ export async function deviceState(
     },
     screen: await screenStatus(db, stored.settings, day),
     configVersion: stored.version,
+    /** A newer client version a parent asked this PC to install, or null. */
+    update: await updateOffer(db, device),
     timing: {
       heartbeatSeconds: HEARTBEAT_SECONDS,
       leaseSeconds: LEASE_SECONDS,

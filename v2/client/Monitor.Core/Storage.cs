@@ -46,6 +46,8 @@ public sealed class SavedState
 {
     public ClockSnapshot Clock { get; set; } = new();
     public DeviceConfig? Config { get; set; }
+    /// <summary>Update offers (<see cref="UpdateOffer.Id"/>) that failed here; not tried again.</summary>
+    public List<string> FailedUpdates { get; set; } = [];
 }
 
 public static class Store

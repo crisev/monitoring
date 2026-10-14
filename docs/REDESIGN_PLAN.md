@@ -271,8 +271,9 @@ v2 is new code, so it starts with the split. Building a user-space app first and
   - none of these can make game time used exceed the server balance, and none removes the Edge allowlist; ledger and Discord show what happened
 - **Switch over** on his PC: uninstall old, install v2.
 
-### Phase 3 — Auto-update
+### Phase 3 — Auto-update — implemented, see [`v2/client/README.md`](../v2/client/README.md#automatic-updates)
 - Updater with rollback, CI release with SHA-256, target version from the web app.
+- As built: every client change on `main` creates a GitHub Release `client-v<version>`. The server checks GitHub hourly, and a parent clicks **Update** per PC. The heartbeat carries the offer (`update`), and the service downloads and verifies it, then runs the installed version's `update.ps1` as SYSTEM. That script rolls back if the new version doesn't reach the server within 2 minutes. No separate `Monitor.Updater.exe`: the PowerShell script does its job.
 
 ### Phase 4 — Statistics and polish
 - Activity buckets, dashboard (timeline, per-app/site, trends), PWA install.

@@ -12,6 +12,7 @@ import type { GameSession } from '../game';
 import { ensureDays, gameBalance } from '../ledger';
 import { recordHeartbeat } from '../screen';
 import { announceClosed } from '../sessions-notify';
+import { applyUpdateEvent } from '../releases';
 import { loadSettings } from '../settings';
 import { deviceState } from '../state';
 import { clock } from '../time';
@@ -87,7 +88,9 @@ app.post('/heartbeat', requireDevice, async (c) => {
   const names = new Map([[device.id, device.name]]);
   c.executionCtx.waitUntil(announceClosed(c.env, closed, now, names));
 
-  return c.json(await deviceState(db, stored, device, day, session, now));
+  // The version just reported counts for the update offer (the stored one may be from before an update).
+  const current = { ...device, client_version: input.clientVersion ?? device.client_version };
+  return c.json(await deviceState(db, stored, current, day, session, now));
 });
 
 app.post('/game/start', requireDevice, async (c) => {
@@ -165,6 +168,8 @@ app.post('/events', requireDevice, async (c) => {
     const detail = e.detail === undefined ? undefined : JSON.stringify(e.detail).slice(0, 2000);
     await logEvent(c.env.DB, now, { type: `pc:${e.type}`, deviceId: device.id, detail });
     if (NOTIFY_TYPES.has(e.type)) toNotify.push(`🖥️ ${device.name}: **${e.type}** ${detail ?? ''}`);
+    const updateMessage = await applyUpdateEvent(c.env.DB, device, e.type, e.detail, now);
+    if (updateMessage) toNotify.push(updateMessage);
   }
   if (toNotify.length) c.executionCtx.waitUntil(notify(c.env, toNotify.join('\n')));
   return c.json({ ok: true, stored: valid.length, dropped: input.events.length - valid.length });

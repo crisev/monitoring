@@ -104,6 +104,7 @@ internal sealed partial class MonitorWorker(ServiceOptions options) : Background
         var identity = Store.Load<DeviceIdentity>(Paths.DeviceFile);
         var saved = Store.Load<SavedState>(Paths.StateFile);
         clock = new ModeClock(started, saved?.Clock);
+        failedUpdates = saved?.FailedUpdates ?? [];
         config = saved?.Config ?? new DeviceConfig();
         rules = BuildRules(config);
         if (identity is { Token.Length: > 0, ServerUrl.Length: > 0 })
@@ -116,6 +117,7 @@ internal sealed partial class MonitorWorker(ServiceOptions options) : Background
             Log.Warn("This PC is not enrolled (no device.json). School mode applies and the offline budget counts down.");
         }
         QueueEvent("client_started", new { version = Format.Version, dryRun = options.DryRun });
+        CheckUpdateOutcome();
 
         agents = new AgentHost(agentPath, OnAgentMessageAsync, (type, detail) => QueueEvent("tamper", new { type, detail }));
         var pipeTask = agents.RunAsync(ct);
@@ -659,7 +661,7 @@ internal sealed partial class MonitorWorker(ServiceOptions options) : Background
             lock (gate)
             {
                 if (clock is null) return;
-                state = new SavedState { Clock = clock.Snapshot(), Config = config };
+                state = new SavedState { Clock = clock.Snapshot(), Config = config, FailedUpdates = [.. failedUpdates.TakeLast(20)] };
             }
             Store.Save(Paths.StateFile, state);
         }
