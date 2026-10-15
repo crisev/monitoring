@@ -1,0 +1,182 @@
+import { exports as workerExports } from 'cloudflare:workers';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { resetDb } from './helpers';
+
+const worker = (workerExports as unknown as { default: Fetcher }).default;
+const LOCAL = 'http://localhost'; // dev parent bypass applies only to localhost
+const REMOTE = 'https://monitor.example.workers.dev';
+
+function call(base: string, path: string, init: RequestInit & { json?: unknown; token?: string } = {}) {
+  const headers = new Headers(init.headers);
+  if (init.json !== undefined) headers.set('content-type', 'application/json');
+  if (init.token) headers.set('authorization', `Bearer ${init.token}`);
+  return worker.fetch(
+    new Request(base + path, {
+      method: init.method ?? (init.json !== undefined ? 'POST' : 'GET'),
+      headers,
+      body: init.json !== undefined ? JSON.stringify(init.json) : init.body,
+    }),
+  );
+}
+
+async function enrollPc(): Promise<string> {
+  const created = await call(LOCAL, '/api/parent/devices', { json: { name: 'Desktop' } });
+  const { code } = (await created.json()) as { code: string };
+  const res = await call(REMOTE, '/api/device/enroll', { json: { code } });
+  expect(res.status).toBe(200);
+  return ((await res.json()) as { token: string }).token;
+}
+
+beforeEach(resetDb);
+
+describe('http api', () => {
+  it('health', async () => {
+    expect(await (await call(REMOTE, '/api/health')).json()).toMatchObject({ ok: true });
+  });
+
+  it('device routes need a valid token', async () => {
+    expect((await call(REMOTE, '/api/device/heartbeat', { json: { screenActive: true } })).status).toBe(401);
+    expect((await call(REMOTE, '/api/device/heartbeat', { json: { screenActive: true }, token: 'nope' })).status).toBe(401);
+  });
+
+  it('parent routes need a Cloudflare Access login when not on localhost', async () => {
+    expect((await call(REMOTE, '/api/parent/today')).status).toBe(401);
+    const forged = await call(REMOTE, '/api/parent/today', { headers: { 'cf-access-jwt-assertion': 'x.y.z' } });
+    expect(forged.status).toBe(401);
+  });
+
+  it('rejects cross-site form posts to parent routes', async () => {
+    const res = await call(LOCAL, '/api/parent/grant', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain', origin: 'https://evil.example' },
+      body: JSON.stringify({ bucket: 'game', minutes: 600 }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('enrollment codes work once', async () => {
+    const created = await call(LOCAL, '/api/parent/devices', { json: { name: 'Desktop' } });
+    const { code } = (await created.json()) as { code: string };
+    expect((await call(REMOTE, '/api/device/enroll', { json: { code: code.toLowerCase() } })).status).toBe(200);
+    expect((await call(REMOTE, '/api/device/enroll', { json: { code } })).status).toBe(400);
+  });
+
+  it('full flow: grant, play, parent ends gaming', async () => {
+    const token = await enrollPc();
+
+    let hb = await call(REMOTE, '/api/device/heartbeat', { json: { screenActive: true, clientVersion: '2.0.0' }, token });
+    expect(await hb.json()).toMatchObject({ mode: 'school', session: null });
+
+    const denied = await call(REMOTE, '/api/device/game/start', { method: 'POST', token });
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toMatchObject({ error: 'no_balance' });
+
+    const grant = await call(LOCAL, '/api/parent/grant', { json: { bucket: 'game', minutes: 30, note: 'homework done' } });
+    expect(grant.status).toBe(200);
+    expect(await grant.json()).toMatchObject({ game: { balanceSeconds: 1800 } });
+
+    const started = await call(REMOTE, '/api/device/game/start', { method: 'POST', token });
+    const state = (await started.json()) as { mode: string; session: { id: string }; game: { balanceSeconds: number } };
+    expect(state.mode).toBe('gaming');
+    expect(state.game.balanceSeconds).toBe(1800);
+
+    hb = await call(REMOTE, '/api/device/heartbeat', { json: { screenActive: true, sessionId: state.session.id }, token });
+    expect(await hb.json()).toMatchObject({ mode: 'gaming', session: { id: state.session.id } });
+
+    const today = (await (await call(LOCAL, '/api/parent/today')).json()) as { gaming: unknown[] };
+    expect(today.gaming).toHaveLength(1);
+
+    await call(LOCAL, '/api/parent/end-gaming', { json: { note: 'dinner' } });
+    hb = await call(REMOTE, '/api/device/heartbeat', { json: { screenActive: true, sessionId: state.session.id }, token });
+    expect(await hb.json()).toMatchObject({ mode: 'school', session: null });
+
+    const ledger = (await (await call(LOCAL, '/api/parent/ledger')).json()) as { items: { kind: string; by: string }[] };
+    expect(ledger.items.map((i) => i.kind)).toEqual(['usage', 'grant']);
+    expect(ledger.items[1].by).toBe('parent@example.com');
+  });
+
+  it('stores activity from the PC and reports it to parents', async () => {
+    const token = await enrollPc();
+    const bad = await call(REMOTE, '/api/device/activity', { json: { items: 'nope' }, token });
+    expect(bad.status).toBe(400);
+    // An unusable item is dropped, not the whole batch.
+    const partly = await call(REMOTE, '/api/device/activity', {
+      json: { items: [{ app: 'x' }, { secondsAgo: 0, mode: 'school', app: 'Code', seconds: 5 }] },
+      token,
+    });
+    expect(await partly.json()).toMatchObject({ ok: true, stored: 1, dropped: 1 });
+    const ok = await call(REMOTE, '/api/device/activity', {
+      json: { items: [{ secondsAgo: 0, mode: 'school', app: 'msedge', site: 'https://pbinfo.ro/x', title: 'pbinfo', seconds: 45 }] },
+      token,
+    });
+    expect(await ok.json()).toMatchObject({ ok: true, stored: 1 });
+    const report = (await (await call(LOCAL, '/api/parent/activity')).json()) as { sites: { site: string; seconds: number }[] };
+    expect(report.sites).toEqual([expect.objectContaining({ site: 'pbinfo.ro', seconds: 45 })]);
+    expect((await call(LOCAL, '/api/parent/activity?from=2026-01-01&to=2026-12-31')).status).toBe(400);
+  });
+
+  it('accepts out-of-range values from the PC by clamping them instead of rejecting the request', async () => {
+    const token = await enrollPc();
+    const hb = await call(REMOTE, '/api/device/heartbeat', {
+      json: { screenActive: true, screenSeconds: 999_999, clientVersion: 'x'.repeat(80) },
+      token,
+    });
+    expect(hb.status).toBe(200);
+
+    const events = Array.from({ length: 150 }, (_, i) => ({ type: i === 0 ? '' : `e${i}`.padEnd(70, 'x') }));
+    const ev = await call(REMOTE, '/api/device/events', { json: { events }, token });
+    expect(await ev.json()).toMatchObject({ ok: true, stored: 149, dropped: 1 });
+
+    const act = await call(REMOTE, '/api/device/activity', {
+      json: {
+        items: [{ secondsAgo: 99_999_999, mode: 'school', app: 'A'.repeat(150), title: 'T'.repeat(2000), seconds: 5000, site: null }],
+      },
+      token,
+    });
+    expect(await act.json()).toMatchObject({ ok: true, stored: 1, dropped: 0 });
+  });
+
+  it('removing time stops at zero, and "remove all" also ends gaming', async () => {
+    const token = await enrollPc();
+    await call(LOCAL, '/api/parent/grant', { json: { bucket: 'game', minutes: 20 } });
+    const minus = (await (await call(LOCAL, '/api/parent/grant', { json: { bucket: 'game', minutes: -30 } })).json()) as {
+      appliedSeconds: number;
+      game: { balanceSeconds: number };
+    };
+    expect(minus).toMatchObject({ appliedSeconds: -1200, game: { balanceSeconds: 0 } });
+
+    await call(LOCAL, '/api/parent/grant', { json: { bucket: 'game', minutes: 30 } });
+    const started = (await (await call(REMOTE, '/api/device/game/start', { method: 'POST', token })).json()) as { session: { id: string } };
+    const cleared = await call(LOCAL, '/api/parent/clear-game', { json: { note: 'bedtime' } });
+    expect(await cleared.json()).toMatchObject({ gaming: [], game: { balanceSeconds: 0 } });
+    const hb = await call(REMOTE, '/api/device/heartbeat', { json: { screenActive: true, sessionId: started.session.id }, token });
+    expect(await hb.json()).toMatchObject({ mode: 'school', game: { balanceSeconds: 0 } });
+  });
+
+  it('reports what played sound, including background apps', async () => {
+    const token = await enrollPc();
+    await call(REMOTE, '/api/device/activity', {
+      json: {
+        items: [
+          { secondsAgo: 0, mode: 'school', app: 'Code', title: 'main.cpp', seconds: 60 },
+          { secondsAgo: 0, mode: 'school', app: 'msedge', audioSeconds: 60 },
+        ],
+      },
+      token,
+    });
+    const report = (await (await call(LOCAL, '/api/parent/activity')).json()) as { sound: { app: string; audio: number }[] };
+    expect(report.sound).toEqual([expect.objectContaining({ app: 'msedge', audio: 60 })]);
+  });
+
+  it('settings are validated and versioned', async () => {
+    const bad = await call(LOCAL, '/api/parent/settings', { method: 'PUT', json: { dailyGameMinutes: -5 } });
+    expect(bad.status).toBe(400);
+    const ok = await call(LOCAL, '/api/parent/settings', { method: 'PUT', json: { dailyGameMinutes: 45 } });
+    expect(await ok.json()).toMatchObject({ version: 1, settings: { dailyGameMinutes: 45, maxGameBalanceMinutes: 300 } });
+
+    const token = await enrollPc();
+    const cfg = (await (await call(REMOTE, '/api/device/config', { token })).json()) as { version: number; allowedSites: string[] };
+    expect(cfg.version).toBe(1);
+    expect(cfg.allowedSites).toContain('pbinfo.ro');
+  });
+});

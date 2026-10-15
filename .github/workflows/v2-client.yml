@@ -1,0 +1,89 @@
+name: v2 client
+
+# Builds and tests the Windows client (v2) on every push, to any branch.
+# On main it also publishes a GitHub Release "client-v<version>" with MonitorV2-<version>.zip and its .sha256,
+# if v2/client changed since the last release. The server finds it within an hour (or with "Check now" on the
+# PCs page), and a parent then clicks Update for each PC. A manual run always publishes a release.
+# The original app (Monitor.csproj at the repository root) is no longer built.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # create releases
+
+defaults:
+  run:
+    working-directory: v2/client
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags and history, to see whether the client changed since the last release
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Version
+        id: version
+        shell: pwsh
+        # major.minor from Directory.Build.props, patch = this workflow's run number (always increases).
+        run: |
+          [xml] $props = Get-Content Directory.Build.props
+          $base = [version] ($props.Project.PropertyGroup.Version | Select-Object -First 1)
+          $version = "$($base.Major).$($base.Minor).${{ github.run_number }}"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $version"
+
+      - name: Release needed?
+        id: release
+        shell: pwsh
+        run: |
+          $event = '${{ github.event_name }}'
+          $release = 'false'
+          if ($event -eq 'workflow_dispatch') {
+            $release = 'true'
+          }
+          elseif ($event -eq 'push' -and '${{ github.ref }}' -eq 'refs/heads/main') {
+            $last = git tag --list 'client-v*' --sort=-v:refname | Select-Object -First 1
+            if (-not $last) { $release = 'true'; Write-Host 'No client release yet.' }
+            else {
+              git diff --quiet $last HEAD -- .
+              if ($LASTEXITCODE -ne 0) { $release = 'true'; Write-Host "v2/client changed since ${last}." }
+              else { Write-Host "v2/client unchanged since ${last}: no new release." }
+            }
+          }
+          "release=$release" >> $env:GITHUB_OUTPUT
+          exit 0 # git diff --quiet returns 1 when something changed; that is not a failure
+
+      - run: dotnet test MonitorV2.sln -c Release
+
+      - name: Publish
+        shell: pwsh
+        run: ./publish.ps1 -Version ${{ steps.version.outputs.version }} -Zip
+
+      # Download from the run's Summary page; unzip it on the PC and run install.ps1 (see v2/docs/INSTALL_PC.md).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MonitorV2-${{ steps.version.outputs.version }}
+          path: v2/client/dist/MonitorV2
+          retention-days: 30
+
+      - name: GitHub Release
+        if: steps.release.outputs.release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $zip = "dist/MonitorV2-$version.zip"
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  MonitorV2-$version.zip" | Set-Content "$zip.sha256" -NoNewline -Encoding ascii
+          $notes = "Windows client $version (commit ${{ github.sha }}).`n`nSHA-256: $hash`n`nInstall: see v2/docs/INSTALL_PC.md. Or click Update on the web app's PCs page."
+          # --latest=false: the original app, still running on PCs not yet switched over, may follow "latest".
+          gh release create "client-v$version" $zip "$zip.sha256" --title "PC client $version" --notes $notes --target "${{ github.sha }}" --latest=false
