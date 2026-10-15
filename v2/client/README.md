@@ -43,7 +43,7 @@ What the script does:
 
 ### Automatic updates
 
-1. **Release.** Every client change pushed to `main` (or a manual run of the *v2 client* workflow) builds version `<major.minor>.<run number>` and publishes a GitHub Release `client-v<version>` with `MonitorV2-<version>.zip` and its `.sha256`. Change major/minor in `Directory.Build.props`.
+1. **Release.** Every push builds and tests the client. A push to `main` that changes `v2/client` (or a manual run of the *v2 client* workflow) builds version `<major.minor>.<run number>` and publishes a GitHub Release `client-v<version>` with `MonitorV2-<version>.zip` and its `.sha256`. Change major/minor in `Directory.Build.props`.
 2. **Server.** It checks GitHub about once an hour (or **PCs → Check now**) and posts "New PC version … available" to Discord.
 3. **You click Update** on the PC's card. At its next heartbeat (≤ 30 s), when it isn't gaming, the PC:
    - downloads the zip into `C:\ProgramData\MonitorV2\updates` (SYSTEM/Administrators only)

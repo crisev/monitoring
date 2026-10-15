@@ -230,7 +230,7 @@ v2 is new code, so it starts with the split. Building a user-space app first and
     install/install.ps1
   tools/fake-device.mjs  simulates a PC against the server (for testing without Windows)
   docs/SETUP.md          step-by-step Cloudflare setup (Phase 0)
-.github/workflows/     existing release (unchanged) + v2-server.yml (test + deploy) + v2-client.yml (test + publish the install folder)
+.github/workflows/     v2-server.yml (test + deploy) + v2-client.yml (build + test on every push; release on main). The original app is no longer built.
 ```
 
 ## 9. Phases

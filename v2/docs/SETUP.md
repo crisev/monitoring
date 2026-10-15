@@ -166,7 +166,7 @@ The workflow `.github/workflows/v2-server.yml` runs the tests on every push that
 
 Without them, the deploy step is skipped and only the tests run.
 
-The workflow `.github/workflows/v2-client.yml` builds and tests the Windows client. On pushes to `main` it also publishes a GitHub Release `client-v<version>`, which the PCs page offers as an update. It needs no secrets.
+The workflow `.github/workflows/v2-client.yml` builds and tests the Windows client on every push, to any branch. On pushes to `main` that change `v2/client`, it also publishes a GitHub Release `client-v<version>`, which the PCs page offers as an update. It needs no secrets. (The original app is no longer built by GitHub Actions.)
 
 **Optional: `GITHUB_TOKEN` Worker secret.** The server checks GitHub for new client releases once an hour. Without a token GitHub allows 60 requests an hour per address, and Cloudflare shares addresses, so a check can fail with 403 (the PCs page then shows the error). To avoid that, create a fine-grained token with no permissions (GitHub → Settings → Developer settings → Fine-grained tokens, *Public repositories (read-only)*) and set it:
 
