@@ -9,7 +9,8 @@ internal static class Screenshot
 {
     private const int MaxWidth = 1920;
     private const int MaxHeight = 1200;
-    private const long JpegQuality = 60;
+    private static readonly long[] JpegQualities = [60, 45, 30];
+    private const int MaxBytes = 1_500_000;
 
     /// <summary>All monitors as one JPEG, scaled down to fit 1920×1200. Null if the desktop can't be captured (e.g. locked).</summary>
     public static byte[]? CaptureJpeg()
@@ -25,12 +26,19 @@ internal static class Screenshot
             double scale = Math.Min(1.0, Math.Min((double)MaxWidth / bounds.Width, (double)MaxHeight / bounds.Height));
             using var image = scale < 1.0 ? Resize(full, scale) : (Bitmap)full.Clone();
 
+            // The server keeps screenshots of up to ~1.9 MB: busy screens are saved at lower quality.
             var codec = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
-            using var parameters = new EncoderParameters(1);
-            parameters.Param[0] = new EncoderParameter(Encoder.Quality, JpegQuality);
-            using var ms = new MemoryStream();
-            image.Save(ms, codec, parameters);
-            return ms.ToArray();
+            byte[] jpeg = [];
+            foreach (var quality in JpegQualities)
+            {
+                using var parameters = new EncoderParameters(1);
+                parameters.Param[0] = new EncoderParameter(Encoder.Quality, quality);
+                using var ms = new MemoryStream();
+                image.Save(ms, codec, parameters);
+                jpeg = ms.ToArray();
+                if (jpeg.Length <= MaxBytes) break;
+            }
+            return jpeg;
         }
         catch (Exception ex)
         {

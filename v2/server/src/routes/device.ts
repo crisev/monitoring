@@ -13,6 +13,7 @@ import { ensureDays, gameBalance } from '../ledger';
 import { recordHeartbeat } from '../screen';
 import { announceClosed } from '../sessions-notify';
 import { applyUpdateEvent } from '../releases';
+import { storeScreenshot } from '../screenshots';
 import { loadSettings } from '../settings';
 import { deviceState } from '../state';
 import { clock } from '../time';
@@ -185,10 +186,12 @@ app.post('/screenshot', requireDevice, async (c) => {
 
   const { settings } = await loadSettings(c.env.DB);
   const s = await openSession(c.env.DB, device.id);
-  const mode = s && s.paid_until > now ? '🎮 gaming' : '🔵 school';
-  const caption = `📸 ${device.name} · ${mode} · ${clock(now, settings.timeZone)}`;
+  const mode = s && s.paid_until > now ? 'gaming' : 'school';
+  // Kept 3 days for the web app's Screenshots tab, and forwarded to Discord.
+  const id = await storeScreenshot(c.env.DB, { deviceId: device.id, mode, contentType: type, image, timeZone: settings.timeZone }, now);
+  const caption = `📸 ${device.name} · ${mode === 'gaming' ? '🎮 gaming' : '🔵 school'} · ${clock(now, settings.timeZone)}`;
   c.executionCtx.waitUntil(sendImage(c.env, image, type, caption).then(() => undefined));
-  return c.json({ ok: true });
+  return c.json({ ok: true, stored: id !== null });
 });
 
 export default app;

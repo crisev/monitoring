@@ -166,7 +166,7 @@ The last two rows are rarely changed and are deliberately kept out of the web ap
 - **Discord** keeps:
   - screenshots (posted by the Worker, not the PC)
   - short events: started, gaming on/off, balance empty, time granted (and by whom), PC silent, tamper
-- Optional later: keep thumbnails in R2 (free 10 GB) to show screenshots inside the timeline.
+- Screenshots are also kept in D1 for 3 days and shown in the web app's **Screenshots** tab (the cron deletes older ones). Images over ~1.9 MB, the D1 row limit, only go to Discord; the client lowers the JPEG quality to stay under 1.5 MB.
 
 ## 6. Windows client v2: service + agent
 

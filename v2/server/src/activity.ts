@@ -88,33 +88,45 @@ export async function recordActivity(db: D1Database, deviceId: string, timeZone:
 
 interface Totals { seconds: number; school: number; gaming: number; audio: number; blocked: number }
 
-/** Activity summary for days `from`..`to` (inclusive, YYYY-MM-DD). */
-export async function activityReport(db: D1Database, from: string, to: string) {
+export type Mode = 'school' | 'gaming';
+
+/** The monitor's own programs: never shown in reports (e.g. the child opening the status window). */
+export const HIDDEN_APPS = ['Monitor.Agent', 'Monitor.Service'];
+const VISIBLE = `app NOT IN (${HIDDEN_APPS.map((a) => `'${a}'`).join(', ')})`;
+
+/**
+ * Activity summary for days `from`..`to` (inclusive, YYYY-MM-DD). With `mode`, the lists (apps, websites,
+ * titles, sound) only include that mode; totals, per-day and the timeline always show both.
+ */
+export async function activityReport(db: D1Database, from: string, to: string, mode: Mode | null = null) {
   const range = (sql: string) => db.prepare(sql).bind(from, to);
+  const list = (sql: string) => db.prepare(sql).bind(from, to, mode);
+  const inRange = `day BETWEEN ?1 AND ?2 AND ${VISIBLE}`;
+  const inList = `${inRange} AND (?3 IS NULL OR mode = ?3)`;
   const sums = `SUM(fg_seconds) AS seconds,
     SUM(CASE WHEN mode = 'school' THEN fg_seconds ELSE 0 END) AS school,
     SUM(CASE WHEN mode = 'gaming' THEN fg_seconds ELSE 0 END) AS gaming,
     SUM(audio_seconds) AS audio, SUM(blocked) AS blocked`;
 
   const [totals, apps, sites, titles, perDay, slots, sound] = await db.batch([
-    range(`SELECT ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2`),
-    range(`SELECT app, ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2 GROUP BY app ORDER BY seconds DESC, blocked DESC LIMIT 50`),
-    range(`SELECT site, ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2 AND site != '' GROUP BY site ORDER BY seconds DESC LIMIT 50`),
-    range(
-      `SELECT app, site, title, ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2 AND title != ''
+    range(`SELECT ${sums} FROM activity WHERE ${inRange}`),
+    list(`SELECT app, ${sums} FROM activity WHERE ${inList} GROUP BY app ORDER BY seconds DESC, blocked DESC LIMIT 50`),
+    list(`SELECT site, ${sums} FROM activity WHERE ${inList} AND site != '' GROUP BY site ORDER BY seconds DESC LIMIT 50`),
+    list(
+      `SELECT app, site, title, ${sums} FROM activity WHERE ${inList} AND title != ''
        GROUP BY app, site, title ORDER BY seconds DESC LIMIT 40`,
     ),
-    range(`SELECT day, ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2 GROUP BY day ORDER BY day`),
+    range(`SELECT day, ${sums} FROM activity WHERE ${inRange} GROUP BY day ORDER BY day`),
     // Per-slot breakdown for the single-day timeline.
     db
       .prepare(
         `SELECT slot, mode, app, SUM(fg_seconds) AS seconds FROM activity
-         WHERE day = ?1 AND ?1 = ?2 AND fg_seconds > 0 GROUP BY slot, mode, app ORDER BY slot`,
+         WHERE day = ?1 AND ?1 = ?2 AND ${VISIBLE} AND fg_seconds > 0 GROUP BY slot, mode, app ORDER BY slot`,
       )
       .bind(from, to),
     // What played sound, foreground or background (e.g. a video left playing behind another window).
-    range(
-      `SELECT app, site, title, ${sums} FROM activity WHERE day BETWEEN ?1 AND ?2 AND audio_seconds > 0
+    list(
+      `SELECT app, site, title, ${sums} FROM activity WHERE ${inList} AND audio_seconds > 0
        GROUP BY app, site, title ORDER BY audio DESC LIMIT 20`,
     ),
   ]);
@@ -135,6 +147,7 @@ export async function activityReport(db: D1Database, from: string, to: string) {
   return {
     from,
     to,
+    mode,
     totals: {
       seconds: t.seconds ?? 0,
       school: t.school ?? 0,

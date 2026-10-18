@@ -12,6 +12,7 @@ import { closeExpired, openSessions, stopSession } from '../game';
 import { addGrant, ensureDays, gameBalance } from '../ledger';
 import { announceClosed } from '../sessions-notify';
 import { checkReleases, compareVersions, getRelease, lastReleaseCheck, listReleases, requestUpdate } from '../releases';
+import { getScreenshotImage, listScreenshots } from '../screenshots';
 import { loadSettings, saveSettings, SettingsSchema } from '../settings';
 import { todayView } from '../state';
 import { dayOf } from '../time';
@@ -41,7 +42,8 @@ const Paging = z.object({
 });
 
 const Day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const ActivityQuery = z.object({ from: Day.optional(), to: Day.optional() });
+const ScreenshotQuery = z.object({ day: Day.optional(), mode: z.enum(['school', 'gaming']).optional() });
+const ActivityQuery = z.object({ from: Day.optional(), to: Day.optional(), mode: z.enum(['school', 'gaming']).optional() });
 const MAX_ACTIVITY_DAYS = 62;
 
 async function json(c: { req: { raw: Request } }): Promise<unknown> {
@@ -139,7 +141,34 @@ app.get('/activity', async (c) => {
   const from = q.data.from ?? to;
   const span = (Date.parse(to) - Date.parse(from)) / 86_400_000;
   if (span < 0 || span > MAX_ACTIVITY_DAYS) return c.json({ error: 'bad_range' }, 400);
-  return c.json({ ...(await activityReport(c.env.DB, from, to)), today, timeZone: settings.timeZone });
+  return c.json({ ...(await activityReport(c.env.DB, from, to, q.data.mode ?? null)), today, timeZone: settings.timeZone });
+});
+
+/** Screenshots of one day (default today), newest first; the images are fetched one by one. */
+app.get('/screenshots', async (c) => {
+  const q = ScreenshotQuery.safeParse(c.req.query());
+  if (!q.success) return c.json({ error: 'bad_request', issues: q.error.issues }, 400);
+  const now = c.get('now');
+  const { settings } = await loadSettings(c.env.DB);
+  const today = dayOf(now, settings.timeZone);
+  const day = q.data.day ?? today;
+  const res = await listScreenshots(c.env.DB, day, q.data.mode ?? null, now);
+  return c.json({ ...res, day, mode: q.data.mode ?? null, today, timeZone: settings.timeZone });
+});
+
+app.get('/screenshots/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'not_found' }, 404);
+  const img = await getScreenshotImage(c.env.DB, id, c.get('now'));
+  if (!img) return c.json({ error: 'not_found' }, 404);
+  return new Response(img.bytes, {
+    headers: {
+      'content-type': img.contentType,
+      // A screenshot never changes: let the browser keep it (it is deleted on the server after 3 days anyway).
+      'cache-control': 'private, max-age=259200, immutable',
+      'x-content-type-options': 'nosniff',
+    },
+  });
 });
 
 app.get('/settings', async (c) => c.json(await loadSettings(c.env.DB)));

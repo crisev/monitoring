@@ -367,15 +367,28 @@ function perDay(report) {
         h('div', { class: 'col-label' }, i % labelEvery === 0 ? dayLabel(d.day, { day: 'numeric', month: days.length > 7 ? 'short' : undefined, weekday: days.length <= 7 ? 'short' : undefined }) : '')))));
 }
 
+const MODE_LABEL = { school: 'School', gaming: 'Gaming' };
+
+/** "#page?a=1&b=2", leaving out empty values. */
+function pageHash(page, params) {
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v));
+  const query = qs.toString();
+  return `#${page}${query ? `?${query}` : ''}`;
+}
+
 async function renderActivity() {
   const p = hashParams();
   const qs = new URLSearchParams();
   if (p.get('from')) qs.set('from', p.get('from'));
   if (p.get('to')) qs.set('to', p.get('to'));
+  if (p.get('mode')) qs.set('mode', p.get('mode'));
   const r = await api(`/activity?${qs}`);
   timeZone = r.timeZone;
+  const mode = r.mode; // null = both
 
-  const go = (from, to) => (location.hash = `#activity?from=${from}&to=${to}`);
+  const go = (from, to) => (location.hash = pageHash('activity', { from, to, mode }));
+  // Clicking School or Gaming shows only that mode's apps, sites and titles; clicking it again shows all.
+  const setMode = (m) => (location.hash = pageHash('activity', { from: r.from, to: r.to, mode: m === mode ? null : m }));
   const presets = [
     ['Today', r.today, r.today],
     ['Yesterday', shiftDay(r.today, -1), shiftDay(r.today, -1)],
@@ -399,31 +412,120 @@ async function renderActivity() {
     ? [h('div', { class: 'card muted' }, 'No activity recorded for this period.')]
     : [
         h('div', { class: 'tiles tiles3' },
-          h('div', { class: 'card' }, h('div', { class: 'tile-label' }, 'Active on the PC'), h('div', { class: 'tile-value' }, dur(t.seconds))),
-          h('div', { class: 'card' }, h('div', { class: 'tile-label' }, h('i', { class: 'swatch school' }), 'School'), h('div', { class: 'tile-value' }, dur(t.school))),
-          h('div', { class: 'card' }, h('div', { class: 'tile-label' }, h('i', { class: 'swatch gaming' }), 'Gaming'), h('div', { class: 'tile-value' }, dur(t.gaming)))),
+          h('button', { class: `card tile-btn${mode === null ? ' on' : ''}`, 'aria-pressed': String(mode === null), onclick: () => setMode(null) },
+            h('div', { class: 'tile-label' }, 'Active on the PC'), h('div', { class: 'tile-value' }, dur(t.seconds))),
+          h('button', { class: `card tile-btn school${mode === 'school' ? ' on' : ''}`, 'aria-pressed': String(mode === 'school'), onclick: () => setMode('school') },
+            h('div', { class: 'tile-label' }, h('i', { class: 'swatch school' }), 'School'), h('div', { class: 'tile-value' }, dur(t.school))),
+          h('button', { class: `card tile-btn gaming${mode === 'gaming' ? ' on' : ''}`, 'aria-pressed': String(mode === 'gaming'), onclick: () => setMode('gaming') },
+            h('div', { class: 'tile-label' }, h('i', { class: 'swatch gaming' }), 'Gaming'), h('div', { class: 'tile-value' }, dur(t.gaming)))),
+        h('p', { class: 'muted small', style: 'margin:6px 2px 0' }, mode
+          ? `Apps, websites and titles below: ${MODE_LABEL[mode]} only. Tap “Active on the PC” to see both.`
+          : 'Tap School or Gaming to see only what ran in that mode.'),
         h('div', { class: 'section-head' }, h('h2', {}, single ? 'When' : 'Per day'), legend()),
         single ? (r.timeline.length ? timeline(r) : h('div', { class: 'card muted' }, 'No foreground activity.')) : perDay(r),
-        h('h2', {}, 'Apps'),
-        h('div', { class: 'card' }, barList(r.apps.filter((a) => a.seconds > 0), (a) => a.app)),
-        h('h2', {}, 'Websites'),
+        h('h2', {}, mode ? `Apps · ${MODE_LABEL[mode]}` : 'Apps'),
+        h('div', { class: 'card' }, r.apps.some((a) => a.seconds > 0)
+          ? barList(r.apps.filter((a) => a.seconds > 0), (a) => a.app)
+          : h('span', { class: 'muted' }, 'No apps recorded.')),
+        h('h2', {}, mode ? `Websites · ${MODE_LABEL[mode]}` : 'Websites'),
         h('div', { class: 'card' }, r.sites.length ? barList(r.sites, (s) => s.site) : h('span', { class: 'muted' }, 'No websites recorded.')),
-        r.sound?.length && h('h2', {}, 'Playing sound'),
-        r.sound?.length && h('div', { class: 'card' },
+        r.sound?.length > 0 && h('h2', {}, 'Playing sound'),
+        r.sound?.length > 0 && h('div', { class: 'card' },
           h('p', { class: 'muted small', style: 'margin:0 0 8px' }, 'Includes sound from windows in the background, e.g. a video left playing.'),
           h('ul', { class: 'list' }, r.sound.map((x) =>
             listItem(x.title || x.site || x.app, h('span', { class: 'num' }, dur2(x.audio)), [x.app, x.site].filter(Boolean).join(' · '))))),
-        h('h2', {}, 'Window titles'),
+        h('h2', {}, mode ? `Window titles · ${MODE_LABEL[mode]}` : 'Window titles'),
         h('div', { class: 'card' }, r.titles.length
           ? h('ul', { class: 'list' }, r.titles.map((x) => listItem(x.title, h('span', { class: 'num' }, dur2(x.seconds)), [x.app, x.site].filter(Boolean).join(' · '))))
           : h('span', { class: 'muted' }, 'No titles recorded.')),
-        blockedApps.length && h('h2', {}, 'Blocked in School mode'),
-        blockedApps.length && h('div', { class: 'card' },
+        blockedApps.length > 0 && h('h2', {}, 'Blocked in School mode'),
+        blockedApps.length > 0 && h('div', { class: 'card' },
           h('ul', { class: 'list' }, blockedApps.map((a) => listItem(a.app, h('span', { class: 'num' }, `${a.blocked}×`), null)))),
       ];
 
-  view.replaceChildren(filters, h('div', { class: 'range-title' }, title), ...content);
+  view.replaceChildren(filters, h('div', { class: 'range-title' }, title), ...content.filter((c) => c instanceof Node));
   stamp();
+}
+
+// ---------- Screenshots ----------
+
+async function renderScreenshots() {
+  const p = hashParams();
+  const qs = new URLSearchParams();
+  if (p.get('day')) qs.set('day', p.get('day'));
+  if (p.get('mode')) qs.set('mode', p.get('mode'));
+  const r = await api(`/screenshots?${qs}`);
+  timeZone = r.timeZone;
+  const go = (day, mode) => (location.hash = pageHash('screenshots', { day: day === r.today ? null : day, mode }));
+
+  const counts = new Map(r.days.map((d) => [d.day, d]));
+  const dayChips = [0, -1, -2].map((n) => {
+    const day = shiftDay(r.today, n);
+    const label = n === 0 ? 'Today' : n === -1 ? 'Yesterday' : dayLabel(day);
+    const c = counts.get(day)?.count ?? 0;
+    return h('button', { class: `chip${r.day === day ? ' on' : ''}`, onclick: () => go(day, r.mode) }, `${label} (${c})`);
+  });
+  const modeChips = [[null, 'All'], ['school', 'School'], ['gaming', 'Gaming']].map(([m, label]) =>
+    h('button', { class: `chip${r.mode === m ? ' on' : ''}`, onclick: () => go(r.day, m) },
+      m && h('i', { class: `swatch ${m}` }), label));
+
+  const devices = new Set(r.items.map((s) => s.deviceId));
+  const grid = r.items.length
+    ? h('div', { class: 'shots' }, r.items.map((s, i) =>
+        h('button', { class: 'shot', onclick: () => openViewer(r.items, i, devices.size > 1), 'aria-label': `Screenshot at ${when(s.at, false)}` },
+          h('img', { src: `/api/parent/screenshots/${s.id}`, loading: 'lazy', alt: '', width: '320', height: '200' }),
+          h('span', { class: 'shot-cap' },
+            h('span', {}, when(s.at, false), devices.size > 1 && s.deviceName ? ` · ${s.deviceName}` : ''),
+            h('span', { class: `badge ${s.mode}` }, MODE_LABEL[s.mode])))))
+    : h('div', { class: 'card muted' }, 'No screenshots for this day.');
+
+  view.replaceChildren(
+    h('div', { class: 'filters' }, dayChips),
+    h('div', { class: 'filters', style: 'margin-top:8px' }, modeChips),
+    h('div', { class: 'range-title' }, `${r.items.length} screenshot${r.items.length === 1 ? '' : 's'}`),
+    grid,
+    h('p', { class: 'muted small' }, 'Screenshots are kept for 3 days. The interval is set in Settings.'),
+  );
+  stamp();
+}
+
+/** Full-size view with previous / next (arrow keys) and close (Esc, or tap outside the picture). */
+function openViewer(items, index, showDevice) {
+  closeViewer();
+  const img = h('img', { alt: '' });
+  const cap = h('div', { class: 'viewer-cap' });
+  const show = (i) => {
+    index = (i + items.length) % items.length;
+    const s = items[index];
+    img.src = `/api/parent/screenshots/${s.id}`;
+    cap.replaceChildren(
+      h('span', {}, `${when(s.at)}${showDevice && s.deviceName ? ` · ${s.deviceName}` : ''}`),
+      h('span', { class: `badge ${s.mode}` }, MODE_LABEL[s.mode]),
+      h('span', { class: 'muted' }, `${index + 1} / ${items.length}`),
+      h('a', { href: img.src, target: '_blank', rel: 'noopener' }, 'Open'));
+  };
+  // Items are newest first: "previous" goes back in time.
+  const older = h('button', { class: 'viewer-nav', 'aria-label': 'Older', onclick: (e) => { e.stopPropagation(); show(index + 1); } }, '‹');
+  const newer = h('button', { class: 'viewer-nav', 'aria-label': 'Newer', onclick: (e) => { e.stopPropagation(); show(index - 1); } }, '›');
+  const close = h('button', { class: 'viewer-close', 'aria-label': 'Close', onclick: closeViewer }, '✕');
+  const box = h('div', { class: 'viewer', id: 'viewer', role: 'dialog', 'aria-modal': 'true', onclick: (e) => e.target === box && closeViewer() },
+    close, older, h('figure', {}, img, cap), newer);
+  viewerKeys = (e) => {
+    if (e.key === 'Escape') closeViewer();
+    else if (e.key === 'ArrowLeft') show(index + 1);
+    else if (e.key === 'ArrowRight') show(index - 1);
+  };
+  document.addEventListener('keydown', viewerKeys);
+  document.body.append(box);
+  show(index);
+  close.focus();
+}
+
+let viewerKeys = null;
+function closeViewer() {
+  document.getElementById('viewer')?.remove();
+  if (viewerKeys) document.removeEventListener('keydown', viewerKeys);
+  viewerKeys = null;
 }
 
 // ---------- Settings ----------
@@ -433,7 +535,7 @@ const NUMBER_FIELDS = [
   ['maxGameBalanceMinutes', 'Carry-over cap (min)', 'Each morning the game balance is limited to this.'],
   ['dailyScreenMinutes', 'Daily screen-time limit (min)', 'School + gaming. The PC shuts down when it runs out. 0 = no limit.'],
   ['offlineBudgetMinutes', 'Offline budget (min)', 'How long the PC may be used (School mode only) without internet.'],
-  ['screenshotIntervalMinutes', 'Screenshot interval (min)', 'Screenshots go to Discord. 0 = off.'],
+  ['screenshotIntervalMinutes', 'Screenshot interval (min)', 'Shown in the Screenshots tab (kept 3 days) and sent to Discord. 0 = off.'],
 ];
 const LIST_FIELDS = [
   ['allowedApps', 'Allowed apps in School mode', 'Program names without .exe, one per line (e.g. Code, WINWORD).'],
@@ -629,9 +731,13 @@ function isEditing() {
   return [...view.querySelectorAll('input')].some((i) => i.value);
 }
 
-const ROUTES = { today: renderToday, activity: renderActivity, history: renderHistory, settings: renderSettings, devices: renderDevices };
+const ROUTES = {
+  today: renderToday, activity: renderActivity, screenshots: renderScreenshots,
+  history: renderHistory, settings: renderSettings, devices: renderDevices,
+};
 
 async function render() {
+  closeViewer();
   const route = (location.hash.slice(1) || 'today').split('?')[0];
   const fn = ROUTES[route] ?? renderToday;
   for (const a of document.querySelectorAll('#nav a')) {

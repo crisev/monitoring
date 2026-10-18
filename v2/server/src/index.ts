@@ -11,7 +11,8 @@ const app = new Hono<{ Bindings: Env; Variables: AppVars }>();
 app.use('*', async (c, next) => {
   c.set('now', Date.now());
   await next();
-  c.header('cache-control', 'no-store');
+  // Routes may set their own (screenshot images can be cached); everything else is never cached.
+  if (!c.res.headers.has('cache-control')) c.header('cache-control', 'no-store');
 });
 
 app.get('/api/health', (c) => c.json({ ok: true, role: c.env.ROLE }));

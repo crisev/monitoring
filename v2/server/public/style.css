@@ -227,3 +227,41 @@ label.field > small { display: block; color: var(--text-muted); margin-top: 4px;
   .tiles3 .tile-label { font-size: 12px; }
   .tiles3 .tile-value { font-size: 19px; }
 }
+
+/* Activity: School / Gaming tiles are filters */
+.tile-btn { display: block; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; min-height: 0; }
+.tile-btn.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.tile-btn.gaming.on { border-color: var(--gaming); box-shadow: inset 0 0 0 1px var(--gaming); }
+
+/* Screenshots */
+.shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.shot {
+  display: flex; flex-direction: column; padding: 0; overflow: hidden; text-align: left; font: inherit; color: inherit;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); cursor: zoom-in; min-height: 0;
+}
+.shot img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 10; object-fit: cover; background: var(--surface-0); }
+.shot-cap { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; font-size: 14px; }
+.badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; color: #fff; background: var(--series-school); }
+.badge.gaming { background: var(--series-gaming); }
+@media (max-width: 520px) { .shots { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .shot-cap { font-size: 12px; } }
+
+.viewer {
+  position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, 0.88);
+  display: flex; align-items: center; justify-content: center; gap: 8px; padding: 16px;
+}
+.viewer figure { margin: 0; max-width: 100%; max-height: 100%; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.viewer img { max-width: 100%; max-height: calc(100vh - 90px); border-radius: 6px; }
+.viewer-cap { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; color: #fff; margin-top: 10px; font-size: 14px; }
+.viewer-cap .muted { color: #bbb; }
+.viewer-cap a { color: #9cc6ff; }
+.viewer-nav, .viewer-close {
+  background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.25); color: #fff;
+  border-radius: 999px; min-width: 44px; min-height: 44px; font-size: 22px; line-height: 1; flex: none;
+}
+.viewer-close { position: absolute; top: 12px; right: 12px; font-size: 18px; }
+@media (max-width: 520px) {
+  .viewer { padding: 8px; }
+  .viewer-nav { position: absolute; bottom: 16px; }
+  .viewer-nav:first-of-type { left: 16px; }
+  .viewer-nav:last-of-type { right: 16px; }
+}
